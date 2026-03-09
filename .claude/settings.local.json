@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pyenv versions)",
+      "Bash(conda info)",
+      "Read(//Users/shijiahao/.pyenv/**)",
+      "Bash(python3.12:*)",
+      "Bash(source:*)"
+    ]
+  }
+}

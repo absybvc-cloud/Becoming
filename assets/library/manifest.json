@@ -1,0 +1,167 @@
+[
+  {
+    "id": "freesound_799329_0fbbb69d",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_799329_0fbbb69d.wav",
+    "duration": 79.851,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_463353_8af03e41",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_463353_8af03e41.wav",
+    "duration": 51.861,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_534865_be8215e1",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_534865_be8215e1.wav",
+    "duration": 21.109,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_191275_b6c67b55",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_191275_b6c67b55.wav",
+    "duration": 101.803,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_804838_075af95f",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_804838_075af95f.wav",
+    "duration": 95.961,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_689218_1abf0fb2",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_689218_1abf0fb2.wav",
+    "duration": 31.347,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_685195_ce05ccdf",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_685195_ce05ccdf.wav",
+    "duration": 74.5,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_689910_a7599b58",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_689910_a7599b58.wav",
+    "duration": 30.476,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_819483_cbeac7ea",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_819483_cbeac7ea.wav",
+    "duration": 52.0,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698045_76d04beb",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698045_76d04beb.wav",
+    "duration": 14.222,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698044_4f97c90e",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698044_4f97c90e.wav",
+    "duration": 16.0,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698043_a244f285",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698043_a244f285.wav",
+    "duration": 33.391,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698042_ee34165c",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698042_ee34165c.wav",
+    "duration": 38.4,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698041_3a3667a6",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698041_3a3667a6.wav",
+    "duration": 30.0,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  },
+  {
+    "id": "freesound_698040_29aff42a",
+    "category": "drone",
+    "file_path": "library/audio_normalized/freesound/freesound_698040_29aff42a.wav",
+    "duration": 20.426,
+    "energy_level": 4,
+    "density_level": 5,
+    "loopable": true,
+    "cooldown": 120,
+    "tags": []
+  }
+]

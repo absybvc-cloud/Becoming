@@ -1,0 +1,7 @@
+sounddevice
+numpy
+librosa
+soundfile
+pydantic
+requests
+python-dotenv
