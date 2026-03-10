@@ -88,6 +88,51 @@ def _upsert_tag_on_asset(conn: sqlite3.Connection, asset_id: int, tag_text: str,
     )
 
 
+def load_last_review(asset_id: int, db_path: str = DB_PATH) -> dict:
+    """Return the most recent saved review for an asset, or empty dict if none."""
+    if not Path(db_path).exists():
+        return {}
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    # Get last review action
+    ra = conn.execute(
+        "SELECT action_type, notes FROM review_actions WHERE asset_id = ? ORDER BY created_at DESC LIMIT 1",
+        (asset_id,),
+    ).fetchone()
+    # Get curator/becoming tags
+    tags = conn.execute(
+        """SELECT t.tag_text, t.tag_type FROM tags t
+           JOIN asset_tags at ON at.tag_id = t.id
+           WHERE at.asset_id = ? AND t.tag_type IN ('curator','becoming')""",
+        (asset_id,),
+    ).fetchall()
+    # Get current approval_status
+    status_row = conn.execute(
+        "SELECT approval_status FROM audio_assets WHERE id = ?", (asset_id,)
+    ).fetchone()
+    conn.close()
+
+    if not ra and not tags:
+        return {}
+
+    # reverse-map action_type back to decision
+    action_to_decision = {"approve": "keep", "reject": "reject"}
+    decision = action_to_decision.get(ra["action_type"], "keep") if ra else "keep"
+
+    role = next((t["tag_text"] for t in tags if t["tag_type"] == "curator"), "")
+    becoming_tags = [t["tag_text"] for t in tags if t["tag_type"] == "becoming"]
+    notes = ra["notes"] if ra else ""
+    approval_status = status_row["approval_status"] if status_row else ""
+
+    return {
+        "decision": decision,
+        "role": role,
+        "becoming_tags": becoming_tags,
+        "notes": notes,
+        "approval_status": approval_status,
+    }
+
+
 def promote_asset(
     asset_id: int,
     normalized_file_path: str,

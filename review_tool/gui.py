@@ -1,14 +1,14 @@
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from review_tool.loader import load_from_db, load_from_manifest
-from review_tool.models import ReviewAsset
-from review_tool.writer import save_review
+from review_tool.models import ReviewAsset, ReviewRecord
+from review_tool.writer import save_review, load_last_review
 
 ROLES = ["", "pulse", "drift", "texture", "accent", "pad", "rhythm", "noise", "field"]
 DECISIONS = ["keep", "maybe", "reject", "skip"]
@@ -47,12 +47,11 @@ class ReviewGUI(tk.Tk):
         self.resizable(True, True)
         self._assets = []
         self._index = 0
-        self._show_approved = tk.BooleanVar(value=False)
+        self._show_approved = tk.BooleanVar(value=True)
         self._play_proc = None
         self._build_menu()
         self._build_ui()
         self._load_assets()
-        self.bind("<space>", lambda e: self._toggle_play())
         self.bind("<Right>", lambda e: self._save_and_next())
         self.bind("<Left>", lambda e: self._prev())
 
@@ -81,6 +80,10 @@ class ReviewGUI(tk.Tk):
         tk.Label(top, textvariable=self._counter_var, bg=BG, fg=ACC, font=("Helvetica", 11)).pack(side="left")
         self._progress = ttk.Progressbar(top, length=400, mode="determinate")
         self._progress.pack(side="left", padx=16, pady=4)
+        self._reviewed_var = tk.StringVar(value="")
+        self._reviewed_lbl = tk.Label(top, textvariable=self._reviewed_var, bg=BG, fg="#2ecc71",
+                                      font=("Helvetica", 11, "bold"))
+        self._reviewed_lbl.pack(side="left", padx=12)
 
         info = tk.Frame(self, bg=BG)
         info.pack(fill="x", padx=16, pady=8)
@@ -127,7 +130,13 @@ class ReviewGUI(tk.Tk):
         nav.pack(pady=14)
         _make_btn(nav, "Prev", self._prev, font=("Helvetica", 13, "bold"), padx=22, pady=10)[0].pack(side="left", padx=8)
         _make_btn(nav, "Apply and Next", self._save_and_next, font=("Helvetica", 13, "bold"), padx=22, pady=10)[0].pack(side="left", padx=8)
-        tk.Label(self, text="Space: play/stop   Left/Right: navigate", bg=BG, fg="#444", font=("Helvetica", 9)).pack(pady=2)
+        _make_btn(nav, "+ Ingest New Sounds", self._ingest_new,
+                  bg="#1a6b3a", font=("Helvetica", 13, "bold"), padx=22, pady=10)[0].pack(side="left", padx=16)
+
+        self._ingest_status_var = tk.StringVar(value="")
+        tk.Label(self, textvariable=self._ingest_status_var, bg=BG, fg="#2ecc71",
+                 font=("Helvetica", 10)).pack(pady=0)
+        tk.Label(self, text="Left/Right: navigate", bg=BG, fg="#444", font=("Helvetica", 9)).pack(pady=2)
 
     def _load_assets(self):
         self._stop_play()
@@ -136,7 +145,9 @@ class ReviewGUI(tk.Tk):
         else:
             status = "pending_review"
         assets = load_from_db(status=status)
-        if not assets:
+        # Only fall back to manifest if the DB itself doesn't exist
+        from pathlib import Path as _Path
+        if not assets and not _Path("library/becoming.db").exists():
             assets = load_from_manifest()
         self._assets = assets
         self._index = 0
@@ -158,17 +169,43 @@ class ReviewGUI(tk.Tk):
         for name, val in [("world_fit", a.world_fit_score), ("pulse", a.pulse_fit_score), ("drift", a.drift_fit_score), ("quality", a.quality_score), ("silence", a.silence_ratio)]:
             if val is not None:
                 scores.append("{}={:.2f}".format(name, val))
+
+        # Load any previously saved review from DB
+        saved = load_last_review(a.asset_id)
+
+        # Show "reviewed" badge if this asset has a saved review
+        if saved:
+            badge = "✓ reviewed ({})".format(saved.get("approval_status", ""))
+            self._reviewed_var.set(badge)
+            self._reviewed_lbl.config(fg="#2ecc71")
+        else:
+            self._reviewed_var.set("○ not yet reviewed")
+            self._reviewed_lbl.config(fg="#555555")
+
         meta_lines = [
-            "Source: {}  Duration: {}  Status: {}".format(a.source_name, dur, a.approval_status),
+            "Source: {}  Duration: {}  Status: {}".format(
+                a.source_name, dur,
+                saved.get("approval_status", a.approval_status) if saved else a.approval_status
+            ),
             "  ".join(scores) if scores else "",
             "File: {}".format(a.normalized_file_path or "(no file)"),
         ]
         self._meta_var.set("\n".join(l for l in meta_lines if l))
         self._stag_var.set(", ".join(a.source_tags) if a.source_tags else "none")
-        self._tags_var.set(", ".join(a.model_tags) if a.model_tags else "")
-        self._decision_var.set("keep")
-        self._role_var.set("")
-        self._notes.delete("1.0", "end")
+
+        # Pre-populate form with saved values (or defaults for unreviewed)
+        if saved:
+            self._decision_var.set(saved.get("decision", "keep"))
+            self._role_var.set(saved.get("role", ""))
+            self._tags_var.set(", ".join(saved.get("becoming_tags", [])))
+            self._notes.delete("1.0", "end")
+            self._notes.insert("1.0", saved.get("notes", ""))
+        else:
+            self._decision_var.set("keep")
+            self._role_var.set("")
+            self._tags_var.set(", ".join(a.model_tags) if a.model_tags else "")
+            self._notes.delete("1.0", "end")
+
         self._status_var.set("")
         self._play_btn.config(text="Play")
         self._refresh_progress()
@@ -228,7 +265,14 @@ class ReviewGUI(tk.Tk):
         tags = [t.strip() for t in self._tags_var.get().split(",") if t.strip()]
         notes = self._notes.get("1.0", "end").strip()
         try:
-            save_review(asset_id=a.asset_id, decision=decision, role=role or None, tags=tags, notes=notes)
+            rec = ReviewRecord(
+                asset_id=a.asset_id,
+                decision=decision,
+                role=role or None,
+                becoming_tags=tags,
+                notes=notes,
+            )
+            save_review(rec)
             self._status_var.set("saved: " + decision)
         except Exception as exc:
             messagebox.showerror("Save error", str(exc))
@@ -238,6 +282,122 @@ class ReviewGUI(tk.Tk):
             self._show_asset(self._index)
         else:
             messagebox.showinfo("Done", "All assets reviewed!")
+
+    # ------------------------------------------------------------------ #
+    #  Ingest new sounds                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _ingest_new(self):
+        """Open a dialog to ingest a fresh batch of sounds, then reload."""
+        dlg = _IngestDialog(self)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        query, limit = dlg.result
+        self._ingest_status_var.set('⏳ ingesting "%s" ...' % query)
+        self.update_idletasks()
+
+        def _run():
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                from src.ingestion.database import Database
+                from src.ingestion.models import PipelineConfigModel
+                from src.ingestion.pipeline import IngestionPipeline
+                from src.ingestion.sources.freesound import FreesoundConnector
+
+                config = PipelineConfigModel(
+                    database_url="library/becoming.db",
+                    raw_dir="library/audio_raw",
+                    normalized_dir="library/audio_normalized",
+                    embeddings_dir="library/embeddings",
+                    spectrogram_dir="library/spectrograms",
+                    waveform_dir="library/waveforms",
+                    rejected_dir="library/rejected",
+                    review_required=True,   # keep as pending_review so GUI can load them
+                )
+                db = Database("library/becoming.db")
+                db.connect()
+                pipeline = IngestionPipeline(config=config, db=db)
+                api_key = os.getenv("FREESOUND_API_KEY", "")
+                if api_key:
+                    pipeline.register_source(FreesoundConnector(api_key=api_key))
+                ingested = pipeline.run(query=query, source_name="freesound", limit=limit)
+                db.close()   # release lock before GUI reloads
+                n, q = ingested, query
+                self.after(0, lambda n=n, q=q: self._on_ingest_done(n, q))
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda msg=err_msg: self._on_ingest_error(msg))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_ingest_done(self, count: int, query: str):
+        self._ingest_status_var.set('✓ ingested %d new sounds for "%s"' % (count, query))
+        # switch to show only pending_review so the new sounds appear at front
+        self._show_approved.set(False)
+        self._load_assets()
+        if count == 0:
+            messagebox.showinfo(
+                "Ingest complete",
+                "No new sounds were added (all may have been duplicates or filtered out).\n"
+                "Try a different query."
+            )
+
+    def _on_ingest_error(self, msg: str):
+        self._ingest_status_var.set("")
+        messagebox.showerror("Ingest failed", msg)
+
+
+class _IngestDialog(tk.Toplevel):
+    """Modal dialog: enter a search query and how many sounds to fetch."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Ingest New Sounds")
+        self.configure(bg="#1a1a1a")
+        self.resizable(False, False)
+        self.result = None
+        self._build()
+        self.transient(parent)
+        self.grab_set()
+        # centre over parent
+        self.update_idletasks()
+        px, py = parent.winfo_x(), parent.winfo_y()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry("+%d+%d" % (px + pw//2 - w//2, py + ph//2 - h//2))
+
+    def _build(self):
+        BG, FG = "#1a1a1a", "#e0e0e0"
+        pad = {"padx": 18, "pady": 8}
+
+        tk.Label(self, text="Search query", bg=BG, fg=FG,
+                 font=("Helvetica", 12, "bold")).grid(row=0, column=0, sticky="w", **pad)
+        self._query_var = tk.StringVar(value="ambient texture")
+        tk.Entry(self, textvariable=self._query_var, width=34,
+                 bg="#2a2a2a", fg=FG, insertbackground=FG, relief="flat",
+                 font=("Helvetica", 12)).grid(row=0, column=1, **pad)
+
+        tk.Label(self, text="How many", bg=BG, fg=FG,
+                 font=("Helvetica", 12, "bold")).grid(row=1, column=0, sticky="w", **pad)
+        self._limit_var = tk.IntVar(value=10)
+        ttk.Spinbox(self, from_=1, to=50, textvariable=self._limit_var,
+                    width=6).grid(row=1, column=1, sticky="w", **pad)
+
+        btn_row = tk.Frame(self, bg=BG)
+        btn_row.grid(row=2, column=0, columnspan=2, pady=12)
+        _make_btn(btn_row, "Fetch", self._ok, padx=20, pady=8)[0].pack(side="left", padx=8)
+        _make_btn(btn_row, "Cancel", self.destroy, bg="#444444", padx=20, pady=8)[0].pack(side="left", padx=8)
+        self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _ok(self):
+        query = self._query_var.get().strip()
+        if not query:
+            return
+        self.result = (query, int(self._limit_var.get()))
+        self.destroy()
 
 
 def main():
