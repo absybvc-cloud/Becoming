@@ -115,12 +115,17 @@ def load_last_review(asset_id: int, db_path: str = DB_PATH) -> dict:
     if not ra and not tags:
         return {}
 
+    role = next((t["tag_text"] for t in tags if t["tag_type"] == "curator"), "")
+    becoming_tags = [t["tag_text"] for t in tags if t["tag_type"] == "becoming"]
+
+    # Only consider fully tagged if role AND becoming tags are both present
+    if not role or not becoming_tags:
+        return {}
+
     # reverse-map action_type back to decision
     action_to_decision = {"approve": "keep", "reject": "reject"}
     decision = action_to_decision.get(ra["action_type"], "keep") if ra else "keep"
 
-    role = next((t["tag_text"] for t in tags if t["tag_type"] == "curator"), "")
-    becoming_tags = [t["tag_text"] for t in tags if t["tag_type"] == "becoming"]
     notes = ra["notes"] if ra else ""
     approval_status = status_row["approval_status"] if status_row else ""
 

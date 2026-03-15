@@ -48,10 +48,10 @@ def extract_features(file_path: str) -> dict:
             "spectral_bandwidth_mean": None,
             "zero_crossing_rate_mean": round(zcr_mean, 6),
             "tempo_estimate": None,
-            "tonal_confidence": None,
-            "noise_probability": 0.34,
-            "music_probability": 0.33,
-            "speech_probability": 0.33,
+            "tonal_confidence": 0.5,   # assume atmospheric/tonal when unknown
+            "noise_probability": 0.2,
+            "music_probability": 0.6,  # bias toward musical — let curator decide
+            "speech_probability": 0.2,
         }
 
     try:

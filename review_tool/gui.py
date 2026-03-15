@@ -47,7 +47,7 @@ class ReviewGUI(tk.Tk):
         self.resizable(True, True)
         self._assets = []
         self._index = 0
-        self._show_approved = tk.BooleanVar(value=True)
+        self._show_approved = tk.BooleanVar(value=False)
         self._play_proc = None
         self._build_menu()
         self._build_ui()
@@ -74,16 +74,44 @@ class ReviewGUI(tk.Tk):
     def _build_ui(self):
         BG, FG, ACC, CARD = "#1a1a1a", "#e0e0e0", "#4a9eff", "#242424"
 
-        top = tk.Frame(self, bg=BG)
-        top.pack(fill="x", padx=16, pady=(12, 0))
+        # ── Dual progress bars ──────────────────────────────────────────
+        bars = tk.Frame(self, bg=BG)
+        bars.pack(fill="x", padx=16, pady=(12, 4))
+
+        # Row 1 – untagged (pending)
+        row1 = tk.Frame(bars, bg=BG)
+        row1.pack(fill="x", pady=2)
+        tk.Label(row1, text="Untagged", bg=BG, fg="#e67e22",
+                 font=("Helvetica", 10, "bold"), width=9, anchor="w").pack(side="left")
+        self._pending_bar = ttk.Progressbar(row1, length=480, mode="determinate")
+        self._pending_bar.pack(side="left", padx=8)
+        self._pending_lbl = tk.Label(row1, text="0 / 0", bg=BG, fg="#e67e22",
+                                     font=("Helvetica", 10), width=10, anchor="w")
+        self._pending_lbl.pack(side="left")
+
+        # Row 2 – tagged (approved)
+        row2 = tk.Frame(bars, bg=BG)
+        row2.pack(fill="x", pady=2)
+        tk.Label(row2, text="Tagged", bg=BG, fg="#2ecc71",
+                 font=("Helvetica", 10, "bold"), width=9, anchor="w").pack(side="left")
+        self._approved_bar = ttk.Progressbar(row2, length=480, mode="determinate")
+        self._approved_bar.pack(side="left", padx=8)
+        self._approved_lbl = tk.Label(row2, text="0 / 0", bg=BG, fg="#2ecc71",
+                                      font=("Helvetica", 10), width=10, anchor="w")
+        self._approved_lbl.pack(side="left")
+
+        # current-asset position + reviewed badge
+        pos_row = tk.Frame(bars, bg=BG)
+        pos_row.pack(fill="x", pady=(4, 0))
         self._counter_var = tk.StringVar(value="0 / 0")
-        tk.Label(top, textvariable=self._counter_var, bg=BG, fg=ACC, font=("Helvetica", 11)).pack(side="left")
-        self._progress = ttk.Progressbar(top, length=400, mode="determinate")
-        self._progress.pack(side="left", padx=16, pady=4)
+        tk.Label(pos_row, textvariable=self._counter_var, bg=BG, fg=ACC,
+                 font=("Helvetica", 11)).pack(side="left")
         self._reviewed_var = tk.StringVar(value="")
-        self._reviewed_lbl = tk.Label(top, textvariable=self._reviewed_var, bg=BG, fg="#2ecc71",
-                                      font=("Helvetica", 11, "bold"))
-        self._reviewed_lbl.pack(side="left", padx=12)
+        self._reviewed_lbl = tk.Label(pos_row, textvariable=self._reviewed_var,
+                                      bg=BG, fg="#2ecc71", font=("Helvetica", 11, "bold"))
+        self._reviewed_lbl.pack(side="left", padx=14)
+        # keep a hidden progress bar (still used by _refresh_progress)
+        self._progress = ttk.Progressbar(pos_row, length=0, mode="determinate")
 
         info = tk.Frame(self, bg=BG)
         info.pack(fill="x", padx=16, pady=8)
@@ -152,6 +180,7 @@ class ReviewGUI(tk.Tk):
         self._assets = assets
         self._index = 0
         self._refresh_progress()
+        self._refresh_pool_bars()
         if assets:
             self._show_asset(0)
         else:
@@ -218,6 +247,24 @@ class ReviewGUI(tk.Tk):
             self._progress["maximum"] = total
             self._progress["value"] = idx + 1
 
+    def _refresh_pool_bars(self):
+        """Update the two pool progress bars from live DB counts."""
+        try:
+            import sqlite3 as _sq
+            conn = _sq.connect("library/becoming.db")
+            pending  = conn.execute("SELECT COUNT(*) FROM audio_assets WHERE approval_status='pending_review'").fetchone()[0]
+            approved = conn.execute("SELECT COUNT(*) FROM audio_assets WHERE approval_status='approved'").fetchone()[0]
+            conn.close()
+            total = pending + approved
+            self._pending_bar["maximum"]  = max(total, 1)
+            self._pending_bar["value"]    = pending
+            self._pending_lbl.config(text="%d untagged" % pending)
+            self._approved_bar["maximum"] = max(total, 1)
+            self._approved_bar["value"]   = approved
+            self._approved_lbl.config(text="%d tagged" % approved)
+        except Exception:
+            pass
+
     def _toggle_play(self):
         if self._play_proc and self._play_proc.poll() is None:
             self._stop_play()
@@ -261,19 +308,39 @@ class ReviewGUI(tk.Tk):
             return
         a = self._assets[self._index]
         decision = self._decision_var.get()
+
+        # Skip: just advance without writing anything
+        if decision == "skip":
+            if self._index < len(self._assets) - 1:
+                self._index += 1
+                self._show_asset(self._index)
+            else:
+                messagebox.showinfo("Done", "All assets reviewed!")
+            return
+
         role = self._role_var.get().strip()
         tags = [t.strip() for t in self._tags_var.get().split(",") if t.strip()]
         notes = self._notes.get("1.0", "end").strip()
+
+        # Require role and at least one tag before saving
+        if not role:
+            messagebox.showwarning("Missing role", "Please select a Role before saving.")
+            return
+        if not tags:
+            messagebox.showwarning("Missing tags", "Please enter at least one becoming tag before saving.")
+            return
+
         try:
             rec = ReviewRecord(
                 asset_id=a.asset_id,
                 decision=decision,
-                role=role or None,
+                role=role,
                 becoming_tags=tags,
                 notes=notes,
             )
             save_review(rec)
             self._status_var.set("saved: " + decision)
+            self._refresh_pool_bars()
         except Exception as exc:
             messagebox.showerror("Save error", str(exc))
             return

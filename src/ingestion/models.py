@@ -200,7 +200,7 @@ class PipelineConfigModel(BaseModel):
     max_silence_ratio: float = 0.6
     min_rms: float = 0.01
     clipping_threshold: float = 0.99
-    min_world_fit_score: float = 0.4
+    min_world_fit_score: float = 0.2
     duplicate_similarity_threshold: float = 0.95
     review_required: bool = True
     use_panns: bool = False
