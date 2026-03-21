@@ -45,6 +45,7 @@ def build_engine(
     initial_state: str = "submerged",
     tension: float = 0.3,
     density: float = 0.5,
+    temperature: float = 0.5,
 ) -> tuple:
     """Build and wire all engine components."""
 
@@ -74,6 +75,8 @@ def build_engine(
 
     playback = PlaybackEngine()
 
+    transition_log = os.path.join("library", "transitions.jsonl")
+
     conductor = Conductor(
         library=library,
         playback=playback,
@@ -81,6 +84,8 @@ def build_engine(
         weight_engine=weight_engine,
         memory=memory,
         world=world,
+        temperature=temperature,
+        transition_log_path=transition_log,
     )
 
     return library, memory, world, state_machine, weight_engine, playback, conductor
@@ -98,9 +103,17 @@ def status_line(state_machine, conductor, memory, world, playback):
     w = world.get()
     ttl = state_machine.time_until_transition()
 
+    # Context info
+    ctx = conductor.context.snapshot()
+    cluster_run = conductor.context.cluster_run_length()
+    last_cluster = conductor.context.last_cluster or "-"
+    temp = conductor.transitions.temperature
+
     print(
         f"[status] state={state_machine.current} "
         f"| layers={len(layers)}/{state_machine.get_max_layers()} [{roles_str}] "
+        f"| cluster={last_cluster}(run={cluster_run}) "
+        f"| temp={temp:.1f} "
         f"| trend={mem['density_trend']:+.2f} "
         f"| plays={mem['total_plays']} "
         f"| event={mem['time_since_event']:.0f}s ago "
@@ -125,13 +138,13 @@ def input_listener(state_machine, world, conductor, stop_event):
             continue
 
         parts = line.split()
-        cmd = parts[0].lower()
+        cmd = parts[0]
 
-        if cmd == "q":
+        if cmd.lower() == "q":
             print("[engine] quit requested")
             stop_event.set()
             os.kill(os.getpid(), signal.SIGINT)
-        elif cmd == "s" and len(parts) > 1:
+        elif cmd.lower() == "s" and len(parts) > 1:
             try:
                 state_machine.force_state(parts[1])
             except ValueError as e:
@@ -143,19 +156,26 @@ def input_listener(state_machine, world, conductor, stop_event):
                 print(f"[engine] tension set to {val:.2f}")
             except ValueError:
                 print("[engine] usage: t <0-1>")
-        elif cmd == "d" and len(parts) > 1:
+        elif cmd == "T" and len(parts) > 1:
+            try:
+                val = float(parts[1])
+                conductor.transitions.set_temperature(max(0.0, min(1.0, val)))
+                print(f"[engine] temperature set to {val:.2f}")
+            except ValueError:
+                print("[engine] usage: T <0-1>")
+        elif cmd.lower() == "d" and len(parts) > 1:
             try:
                 val = float(parts[1])
                 world.update(density=max(0.0, min(1.0, val)))
                 print(f"[engine] density set to {val:.2f}")
             except ValueError:
                 print("[engine] usage: d <0-1>")
-        elif cmd == "m":
+        elif cmd.lower() == "m":
             conductor.mutate_replace()
         elif cmd == "!":
             conductor.mutate_silence()
         else:
-            print("[engine] commands: s <state> | t <0-1> | d <0-1> | m (mutate) | ! (silence) | q (quit)")
+            print("[engine] commands: s <state> | t <0-1> | d <0-1> | T <0-1> | m (mutate) | ! (silence) | q (quit)")
 
 
 def main():
@@ -165,6 +185,7 @@ def main():
                         choices=STATE_NAMES, help="Initial state")
     parser.add_argument("--tension", type=float, default=0.3, help="Initial tension (0-1)")
     parser.add_argument("--density", type=float, default=0.5, help="Initial density (0-1)")
+    parser.add_argument("--temperature", type=float, default=0.5, help="Semantic temperature (0-1)")
     args = parser.parse_args()
 
     print("╔══════════════════════════════════════════╗")
@@ -177,6 +198,7 @@ def main():
         initial_state=args.state,
         tension=args.tension,
         density=args.density,
+        temperature=args.temperature,
     )
 
     stop_event = threading.Event()
@@ -206,7 +228,7 @@ def main():
     input_thread.start()
 
     print()
-    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | m | ! | q")
+    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | T <0-1> (temperature) | m | ! | q")
     print()
 
     # Status loop

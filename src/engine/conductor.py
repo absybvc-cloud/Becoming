@@ -24,6 +24,9 @@ from .weights import WeightEngine
 from .memory import EngineMemory
 from .world import WorldInterface
 from .library import SoundLibrary
+from .context import ContextWindow
+from .transitions import TransitionEngine, TransitionType
+from .vectors import SemanticVector, build_semantic_vector
 from ..playback_engine import PlaybackEngine
 
 
@@ -82,6 +85,8 @@ class Conductor:
         memory: EngineMemory,
         world: WorldInterface,
         tick_interval: float = 2.0,
+        temperature: float = 0.5,
+        transition_log_path: str | None = None,
     ):
         self.library = library
         self.playback = playback
@@ -95,6 +100,14 @@ class Conductor:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+
+        # Phase 2: semantic transition engine + context window
+        self.context = ContextWindow(size=5)
+        self.transitions = TransitionEngine(
+            memory=memory,
+            temperature=temperature,
+            log_path=transition_log_path,
+        )
 
     def start(self):
         self._running = True
@@ -203,6 +216,11 @@ class Conductor:
         )
         self._layers[fragment.id] = layer
         self.memory.register_play(fragment.id, fragment.tags, fragment.cooldown)
+
+        # Update context window
+        svec = self.library.get_vector(fragment.id) or build_semantic_vector(fragment)
+        self.context.push(fragment, svec)
+
         print(f"[conductor] spawn: {fragment.id} as {role.value} (dur={expected_dur:.0f}s, gain={gain:.2f})")
 
     # ── Role Demand ─────────────────────────────────────────────────────
@@ -243,14 +261,43 @@ class Conductor:
         role: Role,
         exclude_ids: set[str],
     ) -> Optional[SoundFragment]:
-        """Select a fragment for a role using the weight engine."""
-        candidates = self.weights.compute_weights_for_role(
+        """Select a fragment using the semantic transition engine."""
+        candidates = [
+            (f, sv, rv)
+            for f, sv, rv in self.library.get_candidates()
+            if f.id not in exclude_ids
+        ]
+        if not candidates:
+            return None
+
+        ctx = self.context.snapshot()
+        source_frag = self.context.last_fragment
+        source_vec = None
+        if source_frag:
+            source_vec = self.library.get_vector(source_frag.id)
+
+        result = self.transitions.select_next(
+            candidates=candidates,
+            context=ctx,
+            current_state=self.state.current,
+            source_fragment=source_frag,
+            source_vector=source_vec,
+            for_role=role,
+        )
+
+        if result:
+            ttype_str = result.transition_type.value
+            bridge_str = ','.join(result.bridge_tags[:3]) if result.bridge_tags else '-'
+            print(f"[conductor] transition={ttype_str} bridge=[{bridge_str}] sim={result.similarity:.2f}")
+            return result.fragment
+
+        # Fallback: plain weight-based selection if transition engine returns nothing
+        fallback = self.weights.compute_weights_for_role(
             self.library.all_fragments(),
             role=role,
             exclude_ids=exclude_ids,
         )
-        if not candidates:
-            # Relax: try any fragment of this role, ignoring recency
+        if not fallback:
             role_frags = [f for f in self.library.get_by_role(role)
                          if f.id not in exclude_ids
                          and not self.memory.is_on_cooldown(f.id)]
@@ -258,7 +305,7 @@ class Conductor:
                 return None
             return random.choice(role_frags)
 
-        fragments, weights = zip(*candidates)
+        fragments, weights = zip(*fallback)
         return random.choices(fragments, weights=weights, k=1)[0]
 
     # ── Event Triggering ────────────────────────────────────────────────

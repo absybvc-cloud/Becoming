@@ -11,3 +11,4 @@ library/spectrograms/
 library/waveforms/
 library/rejected/
 library/becoming.db
+library/transitions.jsonl

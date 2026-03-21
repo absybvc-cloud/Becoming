@@ -155,6 +155,20 @@ class EngineMemory:
         ratio = stale_count / len(tags)
         return 0.5 + ratio  # 0.5 to 1.5
 
+    # ── Bridge Tag Tracking ──────────────────────────────────────────────
+
+    def register_bridge(self, tags: list[str]):
+        """Record bridge tags used in a transition."""
+        for t in tags:
+            self._tag_play_counts[t] += 1
+
+    def bridge_penalty(self, tag: str) -> float:
+        """Penalty for overused bridge tags. 0 = fresh, up to ~0.5."""
+        usage = self._tag_play_counts.get(tag, 0)
+        if usage <= 2:
+            return 0.0
+        return min(0.5, usage * 0.03)
+
     # ── Summary ─────────────────────────────────────────────────────────
 
     def summary(self) -> dict:

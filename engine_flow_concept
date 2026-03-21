@@ -1,0 +1,363 @@
+# Becoming Engine – Concept Spec (Phase 2 Core)
+## Semantic Drift / Metonymic Audio Engine
+
+---
+
+# 1. Core Idea
+
+This engine does NOT arrange audio on a timeline.
+
+It generates a continuously evolving sound system where:
+
+- each sound selects the next sound
+- transitions are based on semantic relationships
+- the system drifts, mutates, and occasionally ruptures
+- history, state, and external input influence evolution
+
+This is:
+
+    NOT a playlist
+    NOT a sequencer
+    NOT a random shuffle
+
+This is:
+
+    a semantic drift system
+    a metonymic chain generator
+    a dynamic audio ecology
+
+---
+
+# 2. System Overview
+
+Core pipeline:
+
+    audio_db → tag vectors → context builder → transition engine → scheduler → playback
+
+---
+
+# 3. Sound Representation
+
+Each sound must have TWO representations:
+
+---
+
+## 3.1 Semantic Vector
+
+Derived from:
+- curator tags (high weight)
+- model tags (medium weight)
+
+Example:
+
+    {
+      "drift": 1.0,
+      "drone": 0.95,
+      "texture": 0.9,
+      "dark": 0.85,
+      "evolving": 0.8,
+      "field": 0.6
+    }
+
+Rules:
+- normalize weights to [0,1]
+- allow sparse vectors
+
+---
+
+## 3.2 Role Vector
+
+Defines system function, NOT meaning:
+
+    {
+      "grounding": 0.9,
+      "eventfulness": 0.2,
+      "pulse_strength": 0.1,
+      "density": 0.7,
+      "brightness": 0.3,
+      "loopability": 0.8,
+      "rupture_potential": 0.1
+    }
+
+Used to:
+- prevent overcrowding
+- enforce layer balance
+- support system-level decisions
+
+---
+
+# 4. Cluster Assignment (Required)
+
+Each sound must belong to a cluster:
+
+Examples:
+
+- dark_drift
+- tonal_meditative
+- nature_field
+- urban_field
+- industrial_noise
+- pulse_metal
+- rupture_event
+
+Clusters do NOT need to be perfect.
+Manual assignment is acceptable.
+
+---
+
+# 5. Context Window (Critical)
+
+Next sound is NOT based only on current sound.
+
+Define context window:
+
+    context = last 3–5 sounds
+
+Context must include:
+- combined semantic vector
+- dominant tags
+- suppressed tags
+- cluster history
+- role distribution
+
+---
+
+# 6. Transition Engine
+
+There are THREE transition types:
+
+---
+
+## 6.1 CONTINUE (continuity)
+
+- select nearest neighbors
+- high semantic similarity
+- low novelty
+
+Purpose:
+- maintain flow
+
+---
+
+## 6.2 DRIFT (metonymic shift)
+
+- share partial tags
+- introduce 1–2 new semantic dimensions
+
+Purpose:
+- create sliding meaning
+- avoid repetition
+
+---
+
+## 6.3 RUPTURE (productive mismatch)
+
+- low similarity
+- must share at least ONE bridge tag or role compatibility
+
+Purpose:
+- break local loops
+- reconfigure direction
+
+---
+
+# 7. Candidate Selection
+
+For each transition:
+
+1. build candidate pool:
+
+    near_neighbors
+    adjacent_neighbors
+    distant_candidates
+
+2. scoring:
+
+    score = similarity
+          + role_compatibility
+          + novelty_bonus
+          - repetition_penalty
+          - cluster_penalty
+
+3. probabilistic sampling (NOT argmax)
+
+---
+
+# 8. Bridge Tag Logic
+
+Transitions MUST track:
+
+    bridge_tags = intersection(source_tags, target_tags)
+
+System must:
+- record bridge usage
+- penalize repeated bridges
+- encourage new connection pathways
+
+---
+
+# 9. Anti-Loop System (Multi-Layer)
+
+---
+
+## 9.1 File Cooldown
+
+- same file cannot reappear within N steps
+
+---
+
+## 9.2 Tag Cooldown
+
+- overused tags get temporary penalty
+
+---
+
+## 9.3 Bridge Cooldown
+
+- repeated transition patterns get penalized
+
+---
+
+## 9.4 Cluster Drift
+
+- staying too long in same cluster increases escape probability
+
+---
+
+# 10. Memory System
+
+Track:
+
+- recent sounds (window)
+- tag frequency history
+- cluster usage
+- transition patterns
+
+Use this to:
+- bias future selection
+- avoid attractor loops
+
+---
+
+# 11. Semantic Temperature
+
+Parameter:
+
+    temperature ∈ [0,1]
+
+Low:
+- high similarity
+- stable flow
+
+High:
+- more drift
+- more rupture
+- higher randomness
+
+---
+
+# 12. External Variables Interface
+
+All external input normalized as:
+
+    world_state = {
+      "time": float,
+      "tension": float,
+      "humidity": float,
+      "noise_level": float,
+      "human_bias": float
+    }
+
+Effects:
+- modify weights
+- influence transition type probabilities
+- shift cluster preference
+
+---
+
+# 13. Scheduler (Layered System)
+
+System operates in layers:
+
+- ground
+- texture
+- event
+- pulse
+
+Each layer:
+- runs its own chain
+- shares global context
+- respects role balance
+
+---
+
+# 14. Novelty vs Stability Balance
+
+Each candidate must consider:
+
+    attraction (similarity)
+    vs
+    novelty (new tags / rare cluster)
+
+System must NEVER collapse into:
+- repetitive loop
+- static texture
+
+---
+
+# 15. Misrecognition Mechanism (Optional but Important)
+
+Low probability:
+
+- distort tag vector before matching
+- drop tags
+- replace tags
+
+Effect:
+- semantic hallucination
+- unexpected transitions
+
+---
+
+# 16. Transition Record (Required)
+
+Each transition must be logged:
+
+    {
+      "from": id,
+      "to": id,
+      "type": continue | drift | rupture,
+      "bridge_tags": [...],
+      "timestamp": ...
+    }
+
+Used for:
+- anti-loop
+- system analysis
+
+---
+
+# 17. System Goal
+
+The engine should behave like:
+
+- a language system (not playlist)
+- a drifting symbolic chain
+- an evolving ecological field
+- a memory-bearing process
+
+---
+
+# 18. Definition of Success
+
+System is successful if:
+
+- it runs indefinitely without obvious repetition
+- transitions feel coherent but not predictable
+- rare events emerge naturally
+- different sessions produce different evolutions
+- system reacts to external input
+
+---
+
+End of Concept

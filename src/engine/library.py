@@ -11,6 +11,11 @@ import sqlite3
 from typing import Optional
 
 from .roles import Role, SoundFragment, assign_role
+from .vectors import (
+    SemanticVector, RoleVector,
+    build_semantic_vector, build_semantic_vector_from_tags,
+    build_role_vector, assign_cluster,
+)
 
 
 DB_PATH = os.path.join("library", "becoming.db")
@@ -25,6 +30,9 @@ class SoundLibrary:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self.fragments: dict[str, SoundFragment] = {}
+        self.vectors: dict[str, SemanticVector] = {}
+        self.role_vectors: dict[str, RoleVector] = {}
+        self.clusters: dict[str, str] = {}
         self._db: Optional[sqlite3.Connection] = None
 
     def load(self):
@@ -93,10 +101,20 @@ class SoundLibrary:
                 tonal_confidence=features.get("tonal_confidence", 0.0),
             )
             self.fragments[frag.id] = frag
+
+            # Build semantic + role vectors and cluster assignment
+            svec = build_semantic_vector_from_tags(curator_tags, model_tags, source_tags)
+            rvec = build_role_vector(frag)
+            cluster = assign_cluster(frag)
+            self.vectors[frag.id] = svec
+            self.role_vectors[frag.id] = rvec
+            self.clusters[frag.id] = cluster
+
             loaded += 1
 
         print(f"[library] loaded {loaded} fragments from database")
         self._print_role_summary()
+        self._print_cluster_summary()
 
     def _get_tags(self, asset_id: int, source_method: str) -> list[str]:
         rows = self._db.execute("""
@@ -146,6 +164,31 @@ class SoundLibrary:
 
     def all_fragments(self) -> list[SoundFragment]:
         return list(self.fragments.values())
+
+    def get_vector(self, fragment_id: str) -> Optional[SemanticVector]:
+        return self.vectors.get(fragment_id)
+
+    def get_role_vector(self, fragment_id: str) -> Optional[RoleVector]:
+        return self.role_vectors.get(fragment_id)
+
+    def get_cluster(self, fragment_id: str) -> Optional[str]:
+        return self.clusters.get(fragment_id)
+
+    def get_candidates(self) -> list[tuple[SoundFragment, SemanticVector, RoleVector]]:
+        """Return all fragments with their vectors for transition scoring."""
+        out = []
+        for fid, frag in self.fragments.items():
+            svec = self.vectors.get(fid)
+            rvec = self.role_vectors.get(fid)
+            if svec and rvec:
+                out.append((frag, svec, rvec))
+        return out
+
+    def _print_cluster_summary(self):
+        from collections import Counter
+        cc = Counter(self.clusters.values())
+        parts = [f"{c}={n}" for c, n in cc.most_common()]
+        print(f"[library] clusters: {', '.join(parts)}")
 
     def summary(self) -> dict[str, int]:
         counts = {r.value: 0 for r in Role}

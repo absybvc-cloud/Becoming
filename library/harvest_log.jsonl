@@ -94,3 +94,9 @@
 {"timestamp": "2026-03-21T14:32:58.605066+00:00", "query": "industrial factory ambient", "source": "freesound", "category": "field_recording", "limit": 5, "ingested": 2, "status": "ok"}
 {"timestamp": "2026-03-21T14:33:00.062614+00:00", "query": "industrial factory ambient", "source": "internet_archive", "category": "field_recording", "limit": 5, "ingested": 0, "status": "ok"}
 {"timestamp": "2026-03-21T14:33:00.502602+00:00", "query": "industrial factory ambient", "source": "wikimedia", "category": "field_recording", "limit": 5, "ingested": 0, "status": "ok"}
+{"timestamp": "2026-03-21T15:42:39.410124+00:00", "query": "warm", "source": "freesound", "category": "custom", "limit": 5, "ingested": 5, "status": "ok"}
+{"timestamp": "2026-03-21T15:42:40.305951+00:00", "query": "warm", "source": "internet_archive", "category": "custom", "limit": 5, "ingested": 0, "status": "ok"}
+{"timestamp": "2026-03-21T15:42:41.035011+00:00", "query": "warm", "source": "wikimedia", "category": "custom", "limit": 5, "ingested": 0, "status": "ok"}
+{"timestamp": "2026-03-21T15:55:22.207098+00:00", "query": "nature", "source": "freesound", "category": "custom", "limit": 100, "ingested": 100, "status": "ok"}
+{"timestamp": "2026-03-21T15:55:23.665362+00:00", "query": "nature", "source": "internet_archive", "category": "custom", "limit": 100, "ingested": 0, "status": "ok"}
+{"timestamp": "2026-03-21T15:55:24.062329+00:00", "query": "nature", "source": "wikimedia", "category": "custom", "limit": 100, "ingested": 0, "status": "ok"}
