@@ -387,8 +387,12 @@ class ReviewGUI(tk.Tk):
                 db.connect()
                 pipeline = IngestionPipeline(config=config, db=db)
                 api_key = os.getenv("FREESOUND_API_KEY", "")
-                if api_key:
-                    pipeline.register_source(FreesoundConnector(api_key=api_key))
+                if not api_key:
+                    raise ValueError(
+                        "FREESOUND_API_KEY is not set.\n"
+                        "Copy .env.example to .env and add your Freesound API key."
+                    )
+                pipeline.register_source(FreesoundConnector(api_key=api_key))
                 ingested = pipeline.run(query=query, source_name="freesound", limit=limit)
                 db.close()   # release lock before GUI reloads
                 n, q = ingested, query
