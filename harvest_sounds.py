@@ -73,7 +73,7 @@ HARVEST_LOG = os.path.join("library", "harvest_log.jsonl")
 DEFAULT_SOURCES = ["freesound", "internet_archive", "wikimedia"]
 
 
-def build_pipeline() -> IngestionPipeline:
+def build_pipeline(auto_tag: bool = False) -> IngestionPipeline:
     config = PipelineConfigModel(
         database_url=DB_PATH,
         raw_dir="library/audio_raw",
@@ -87,7 +87,7 @@ def build_pipeline() -> IngestionPipeline:
     db = Database(DB_PATH)
     db.connect()
 
-    pipeline = IngestionPipeline(config=config, db=db)
+    pipeline = IngestionPipeline(config=config, db=db, auto_tag=auto_tag)
 
     freesound_key = os.getenv("FREESOUND_API_KEY", "")
     if freesound_key:
@@ -113,6 +113,7 @@ def run_harvest(
     sources: list[str],
     limit_per_query: int,
     dry_run: bool = False,
+    auto_tag: bool = False,
 ):
     if dry_run:
         print("[harvest] DRY RUN — no downloads will occur\n")
@@ -122,7 +123,7 @@ def run_harvest(
         print(f"\n[harvest] {len(queries)} queries × {len(sources)} sources = {len(queries) * len(sources)} searches")
         return
 
-    pipeline = build_pipeline()
+    pipeline = build_pipeline(auto_tag=auto_tag)
     available_sources = list(pipeline._connectors.keys())
 
     total_ingested = 0
@@ -187,6 +188,8 @@ def main():
                         help="Preview queries without downloading")
     parser.add_argument("--category", type=str,
                         help="Only run queries matching this category")
+    parser.add_argument("--auto-tag", action="store_true",
+                        help="Run LLM auto-tagging on each ingested asset")
     args = parser.parse_args()
 
     # Build query list
@@ -205,7 +208,9 @@ def main():
     sources = [args.source] if args.source else DEFAULT_SOURCES
 
     print(f"[harvest] {len(queries)} queries × {len(sources)} sources, limit={args.limit}/query")
-    run_harvest(queries, sources, args.limit, dry_run=args.dry_run)
+    if args.auto_tag:
+        print("[harvest] auto-tag enabled — each sound will be LLM-tagged on ingest")
+    run_harvest(queries, sources, args.limit, dry_run=args.dry_run, auto_tag=args.auto_tag)
 
 
 if __name__ == "__main__":

@@ -96,9 +96,11 @@ class RoleVector:
 
 # Predefined clusters aligned with Becoming's sonic world.
 CLUSTER_DEFS: dict[str, set[str]] = {
-    "dark_drift":        {"drone", "dark", "drift_material", "low", "bassy", "ominous"},
+    "dark_drift":        {"dark", "low", "bassy", "ominous", "mysterious", "rumble"},
     "tonal_meditative":  {"meditative", "tonal", "harmonic", "clean", "resonant", "bells", "chime"},
-    "nature_field":      {"nature", "ocean", "rain", "forest", "wind", "field_recording", "field"},
+    "nature_field":      {"nature", "ocean", "rain", "forest", "wind", "field_recording",
+                          "field-recording", "field", "meadow", "soundscape", "natural-soundscape",
+                          "creek", "stream", "bird", "insect", "thunder", "sea", "wave", "water"},
     "urban_field":       {"urban", "city", "traffic", "industrial", "exterior"},
     "industrial_noise":  {"industrial", "noise", "distorted", "aggressive", "feedback", "saturated"},
     "texture_evolving":  {"texture", "evolving", "granular", "shimmering", "found_sound", "synthetic"},
@@ -107,15 +109,22 @@ CLUSTER_DEFS: dict[str, set[str]] = {
     "ambient_float":     {"ambient", "atmosphere", "floating", "delicate", "serene", "background_layer"},
 }
 
+# Tags so common they appear on almost everything — discount them in cluster scoring.
+_GENERIC_TAGS = {"drone", "drift_material", "nature", "texture"}
+
 
 def _assign_cluster(tags: set[str]) -> str:
     """Assign a sound to the best-matching cluster."""
     best_cluster = "texture_evolving"  # fallback
-    best_score = 0
+    best_score = 0.0
+    specific_tags = tags - _GENERIC_TAGS
     for cname, ctags in CLUSTER_DEFS.items():
-        overlap = len(tags & ctags)
-        if overlap > best_score:
-            best_score = overlap
+        # Specific tags count full, generic tags count at 0.2
+        specific_overlap = len(specific_tags & ctags)
+        generic_overlap = len((tags & _GENERIC_TAGS) & ctags)
+        score = specific_overlap + generic_overlap * 0.2
+        if score > best_score:
+            best_score = score
             best_cluster = cname
     return best_cluster
 

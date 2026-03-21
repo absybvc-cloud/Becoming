@@ -138,15 +138,18 @@ class UnifiedGUI(tk.Tk):
 
         ttk.Label(inner, text="Tension").grid(row=1, column=2, sticky="w")
         self.tension_var = tk.DoubleVar(value=0.3)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.tension_var, orient="horizontal", length=170).grid(row=1, column=3, padx=6)
+        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.tension_var, orient="horizontal", length=170,
+                  command=lambda _: self._auto_apply_slider("t", self.tension_var)).grid(row=1, column=3, padx=6)
 
         ttk.Label(inner, text="Density").grid(row=1, column=4, sticky="w")
         self.density_var = tk.DoubleVar(value=0.5)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.density_var, orient="horizontal", length=170).grid(row=1, column=5, padx=6)
+        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.density_var, orient="horizontal", length=170,
+                  command=lambda _: self._auto_apply_slider("d", self.density_var)).grid(row=1, column=5, padx=6)
 
         ttk.Label(inner, text="Temperature").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.temperature_var = tk.DoubleVar(value=0.5)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.temperature_var, orient="horizontal", length=170).grid(row=2, column=1, padx=6, pady=(8, 0))
+        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.temperature_var, orient="horizontal", length=170,
+                  command=lambda _: self._auto_apply_slider("T", self.temperature_var)).grid(row=2, column=1, padx=6, pady=(8, 0))
 
         self.start_engine_btn = ttk.Button(inner, text="Start Engine", style="Accent.TButton", command=self._start_engine)
         self.start_engine_btn.grid(row=2, column=6, padx=(8, 4), pady=(8, 0))
@@ -170,9 +173,7 @@ class UnifiedGUI(tk.Tk):
         ttk.Combobox(run_inner, textvariable=self.force_state_var, values=STATE_NAMES, state="readonly", width=13).grid(row=1, column=3, padx=4)
         ttk.Button(run_inner, text="Apply", command=lambda: self._send_engine_cmd(f"s {self.force_state_var.get()}\n")).grid(row=1, column=4, padx=4)
 
-        ttk.Button(run_inner, text="Apply Tension", command=lambda: self._send_engine_cmd(f"t {self.tension_var.get():.3f}\n")).grid(row=1, column=5, padx=8)
-        ttk.Button(run_inner, text="Apply Density", command=lambda: self._send_engine_cmd(f"d {self.density_var.get():.3f}\n")).grid(row=1, column=6, padx=4)
-        ttk.Button(run_inner, text="Apply Temperature", command=lambda: self._send_engine_cmd(f"T {self.temperature_var.get():.3f}\n")).grid(row=1, column=7, padx=4)
+
 
     def _build_ingest_tab(self):
         frame = ttk.Frame(self.ingest_tab)
@@ -202,6 +203,9 @@ class UnifiedGUI(tk.Tk):
 
         self.ingest_dry_run = tk.BooleanVar(value=False)
         ttk.Checkbutton(inner, text="Dry Run", variable=self.ingest_dry_run).grid(row=1, column=5, padx=6)
+
+        self.ingest_auto_tag = tk.BooleanVar(value=True)
+        ttk.Checkbutton(inner, text="Auto-tag", variable=self.ingest_auto_tag).grid(row=2, column=5, padx=6)
 
         ttk.Button(inner, text="Run Harvest", style="Accent.TButton", command=self._run_harvest).grid(row=1, column=6, padx=8)
 
@@ -267,11 +271,51 @@ class UnifiedGUI(tk.Tk):
         ttk.Button(row, text="Refresh Stats", command=self._refresh_library).pack(side="left", padx=(0, 8))
         ttk.Button(row, text="Open Review Tool", command=self._open_review_tool).pack(side="left")
 
+        # ── Balance / Rebalance card ────────────────────────────────────
+        bal_card = ttk.Frame(frame, style="Panel.TFrame")
+        bal_card.pack(fill="x", pady=(10, 0))
+
+        bal_inner = ttk.Frame(bal_card)
+        bal_inner.pack(fill="x", padx=12, pady=12)
+
+        ttk.Label(bal_inner, text="Cluster Balance", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
+
+        self.balance_text = tk.Text(
+            bal_inner, height=12, wrap="word",
+            bg="#020617", fg="#e2e8f0", font=("Menlo", 11),
+        )
+        self.balance_text.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(0, 8))
+        self.balance_text.configure(state="disabled")
+
+        bal_row = ttk.Frame(bal_inner)
+        bal_row.grid(row=2, column=0, columnspan=6, sticky="w")
+
+        ttk.Button(bal_row, text="Analyze Balance", command=self._analyze_balance).pack(side="left", padx=(0, 8))
+
+        ttk.Label(bal_row, text="Limit/query").pack(side="left", padx=(12, 4))
+        self.rebalance_limit_var = tk.IntVar(value=5)
+        ttk.Spinbox(bal_row, from_=1, to=50, textvariable=self.rebalance_limit_var, width=5).pack(side="left", padx=(0, 8))
+
+        self.rebalance_auto_tag_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bal_row, text="Auto-tag", variable=self.rebalance_auto_tag_var).pack(side="left", padx=(0, 8))
+
+        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left", padx=(0, 8))
+        ttk.Button(bal_row, text="Dry Run", command=self._run_rebalance_dry).pack(side="left")
+
         self._refresh_library()
 
     # ------------------------------------------------------------------
     # Engine actions
     # ------------------------------------------------------------------
+
+    def _auto_apply_slider(self, cmd: str, var: tk.DoubleVar):
+        """Send slider value to running engine automatically on change."""
+        if self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
+            try:
+                self.engine_proc.stdin.write(f"{cmd} {var.get():.3f}\n")
+                self.engine_proc.stdin.flush()
+            except Exception:
+                pass
 
     def _start_engine(self):
         if self.engine_proc and self.engine_proc.poll() is None:
@@ -380,6 +424,8 @@ class UnifiedGUI(tk.Tk):
             cmd.extend(["--category", category])
         if self.ingest_dry_run.get():
             cmd.append("--dry-run")
+        if self.ingest_auto_tag.get():
+            cmd.append("--auto-tag")
 
         self._run_cmd_async("harvest", cmd)
 
@@ -483,6 +529,73 @@ class UnifiedGUI(tk.Tk):
         self.log_text.insert("end", f"[{source}] {line}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Balance / Rebalance
+    # ------------------------------------------------------------------
+
+    def _analyze_balance(self):
+        """Run balance analysis and display in the text widget."""
+        def worker():
+            try:
+                from balance import analyze_balance, get_db
+                db = get_db()
+                report = analyze_balance(db)
+
+                lines = []
+                lines.append(f"Total assets: {report['total']}")
+                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}")
+                lines.append(f"Balance score: {report['balance_score']:.1%}")
+                lines.append("")
+
+                for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
+                    s = report["clusters"][name]
+                    bar = "█" * int(s["pct"] / 2)
+                    deficit_str = f"  (need +{s['deficit']})" if s["deficit"] > 0 else ""
+                    lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit_str}")
+
+                if report["underrepresented"]:
+                    lines.append("")
+                    lines.append("⚠ Under-represented clusters:")
+                    for item in report["underrepresented"]:
+                        lines.append(f"  {item['cluster']}: {item['count']} sounds (need +{item['deficit']})")
+                else:
+                    lines.append("")
+                    lines.append("✓ All clusters are reasonably balanced")
+
+                text = "\n".join(lines)
+                self.after(0, lambda: self._set_balance_text(text))
+                self.log_queue.put(("balance", f"analysis complete — balance={report['balance_score']:.1%}"))
+            except Exception as e:
+                self.after(0, lambda: self._set_balance_text(f"ERROR: {e}"))
+                self.log_queue.put(("balance", f"ERROR: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_balance_text(self, text: str):
+        self.balance_text.configure(state="normal")
+        self.balance_text.delete("1.0", "end")
+        self.balance_text.insert("1.0", text)
+        self.balance_text.configure(state="disabled")
+
+    def _run_rebalance(self):
+        self._run_rebalance_cmd(dry_run=False)
+
+    def _run_rebalance_dry(self):
+        self._run_rebalance_cmd(dry_run=True)
+
+    def _run_rebalance_cmd(self, dry_run: bool = False):
+        cmd = [
+            str(ROOT / ".venv" / "bin" / "python"),
+            str(ROOT / "balance.py"),
+            "--rebalance",
+            "--limit", str(self.rebalance_limit_var.get()),
+        ]
+        if self.rebalance_auto_tag_var.get():
+            cmd.append("--auto-tag")
+        if dry_run:
+            cmd.append("--dry-run")
+        self._run_cmd_async("rebalance", cmd)
 
     # ------------------------------------------------------------------
     # Shutdown

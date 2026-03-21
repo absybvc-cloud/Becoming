@@ -11,9 +11,10 @@ from .sources.base import BaseSourceConnector
 
 
 class IngestionPipeline:
-    def __init__(self, config: PipelineConfigModel, db: Database):
+    def __init__(self, config: PipelineConfigModel, db: Database, auto_tag: bool = False):
         self.config = config
         self.db = db
+        self.auto_tag = auto_tag
         self._connectors: dict[str, BaseSourceConnector] = {}
 
     def register_source(self, connector: BaseSourceConnector):
@@ -167,7 +168,31 @@ class IngestionPipeline:
 
         approval = "auto-approved" if not self.config.review_required else "pending review"
         print(f"[pipeline] ✓ {local_id} | quality={quality} world_fit={world_fit} | {approval}")
+
+        # Auto-tag immediately if enabled
+        if self.auto_tag:
+            self._auto_tag_asset(asset_id)
+
         return True
+
+    def _auto_tag_asset(self, asset_id: int):
+        """Run LLM auto-tagging on a single asset immediately after ingest."""
+        try:
+            # Import here to avoid circular dependency and keep auto_tag optional
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+            from auto_tag import get_untagged_assets, build_prompt, call_ollama, apply_tags, DEFAULT_MODEL
+
+            assets = get_untagged_assets(self.db, retag=False)
+            asset = next((a for a in assets if a["id"] == asset_id), None)
+            if not asset:
+                return
+            prompt = build_prompt(asset)
+            result = call_ollama(prompt, DEFAULT_MODEL)
+            if result:
+                apply_tags(self.db, asset_id, result)
+        except Exception as e:
+            print(f"[pipeline] auto-tag failed for asset {asset_id}: {e}")
 
     def _store_candidate(self, job_id: int, result, status: CandidateStatus) -> int:
         data = {
