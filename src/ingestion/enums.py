@@ -5,6 +5,7 @@ class SourceName(str, Enum):
     freesound = "freesound"
     internet_archive = "internet_archive"
     wikimedia = "wikimedia"
+    local = "local"
 
 
 class JobStatus(str, Enum):

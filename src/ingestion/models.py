@@ -14,6 +14,7 @@ class SourceSearchRequest(BaseModel):
     source_name: str
     limit: int
     filters: dict[str, Any] = {}
+    page: int = 1
     created_at: Optional[datetime] = None
 
     @field_validator("query")

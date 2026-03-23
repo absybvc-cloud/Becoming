@@ -95,22 +95,39 @@ class RoleVector:
 # ── Cluster ─────────────────────────────────────────────────────────────────
 
 # Predefined clusters aligned with Becoming's sonic world.
+# Keywords must reflect tags that Freesound / LLM actually produce for each category.
 CLUSTER_DEFS: dict[str, set[str]] = {
-    "dark_drift":        {"dark", "low", "bassy", "ominous", "mysterious", "rumble"},
-    "tonal_meditative":  {"meditative", "tonal", "harmonic", "clean", "resonant", "bells", "chime"},
+    "dark_drift":        {"dark", "low", "bassy", "ominous", "mysterious", "rumble",
+                          "deep", "eerie", "haunting", "sinister"},
+    "tonal_meditative":  {"meditative", "tonal", "harmonic", "clean", "resonant", "bells", "chime",
+                          "singing-bowl", "crystal", "tuning", "gentle", "calm"},
     "nature_field":      {"nature", "ocean", "rain", "forest", "wind", "field_recording",
                           "field-recording", "field", "meadow", "soundscape", "natural-soundscape",
                           "creek", "stream", "bird", "insect", "thunder", "sea", "wave", "water"},
-    "urban_field":       {"urban", "city", "traffic", "industrial", "exterior"},
-    "industrial_noise":  {"industrial", "noise", "distorted", "aggressive", "feedback", "saturated"},
-    "texture_evolving":  {"texture", "evolving", "granular", "shimmering", "found_sound", "synthetic"},
-    "pulse_rhythm":      {"rhythmic", "percussive", "pulse_material", "ritual_sound", "heartbeat"},
-    "rupture_event":     {"rare_event", "glitch", "aggressive", "atonal", "glitchy"},
-    "ambient_float":     {"ambient", "atmosphere", "floating", "delicate", "serene", "background_layer"},
+    "urban_field":       {"urban", "city", "traffic", "exterior", "street", "car", "road",
+                          "train", "station", "crowd", "market", "bus", "pedestrian",
+                          "construction", "highway", "subway"},
+    "industrial_noise":  {"industrial", "distorted", "feedback", "saturated",
+                          "machine", "factory", "hum", "electrical", "mechanical",
+                          "electromagnetic", "motor", "generator"},
+    "texture_evolving":  {"evolving", "granular", "shimmering", "synthetic", "morphing",
+                          "processed", "abstract", "experimental", "generative", "modular",
+                          "lo-fi", "tape"},
+    "pulse_rhythm":      {"rhythmic", "pulse_material", "ritual_sound", "heartbeat",
+                          "beat", "loop", "drum", "repetitive", "pattern", "click",
+                          "tap", "synth-percussion", "tempo", "sequence"},
+    "rupture_event":     {"rare_event", "glitch", "aggressive", "atonal", "glitchy",
+                          "impact", "crash", "shatter", "bang", "smash", "hit", "break",
+                          "breaking", "collision", "explosion", "burst", "destroy",
+                          "destruction", "boom", "crack", "crunch", "crush",
+                          "demolition", "shattering", "smashing", "crashing"},
+    "ambient_float":     {"ambient", "atmosphere", "floating", "delicate", "serene",
+                          "background_layer", "ethereal", "soft", "airy", "spacious"},
 }
 
 # Tags so common they appear on almost everything — discount them in cluster scoring.
-_GENERIC_TAGS = {"drone", "drift_material", "nature", "texture"}
+_GENERIC_TAGS = {"drone", "drift_material", "nature", "texture", "found_sound",
+                 "percussive", "noise", "ominous"}
 
 
 def _assign_cluster(tags: set[str]) -> str:

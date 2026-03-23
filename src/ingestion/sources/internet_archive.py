@@ -15,7 +15,7 @@ class InternetArchiveConnector(BaseSourceConnector):
             "q": f"({request.query}) AND mediatype:audio",
             "fl[]": "identifier,title,description,creator,licenseurl,subject",
             "rows": min(request.limit, 100),
-            "page": 1,
+            "page": request.page,
             "output": "json",
         }
         min_dur = request.filters.get("min_duration")

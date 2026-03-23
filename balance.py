@@ -7,9 +7,8 @@ and triggers targeted harvest queries to fill gaps.
 
 Usage:
     python balance.py                    # analyze current balance
-    python balance.py --rebalance        # analyze + auto-harvest to fill gaps
-    python balance.py --rebalance --limit 5   # limit per rebalance query
-    python balance.py --auto-tag         # also LLM-tag newly harvested sounds
+    python balance.py --rebalance        # auto-harvest until balanced (>=95%)
+    python balance.py --rebalance --auto-tag  # also LLM-tag new sounds
 """
 
 from __future__ import annotations
@@ -236,141 +235,179 @@ def print_balance_report(report: dict):
     print(f"{'='*60}\n")
 
 
-def compute_rebalance_plan(report: dict, limit_per_query: int = 5) -> list[dict]:
+def compute_rebalance_plan(report: dict) -> list[dict]:
     """
-    Given a balance report, compute which queries to run and how many
-    results to fetch from each.
+    Given a balance report, compute which queries to run for every
+    cluster that is below the ideal count.
 
     Returns list of {"query": str, "category": str, "cluster": str, "limit": int}
     """
     plan = []
+    clusters = report.get("clusters", {})
+    total = report.get("total", 0)
+    n_clusters = len(clusters)
+    if n_clusters == 0:
+        return plan
 
-    for item in report.get("underrepresented", []):
-        cluster = item["cluster"]
-        deficit = item["deficit"]
-        queries = CLUSTER_QUERIES.get(cluster, [])
+    ideal = total / n_clusters
+
+    for name in sorted(clusters, key=lambda n: clusters[n]["count"]):
+        count = clusters[name]["count"]
+        deficit = round(ideal - count)
+        if deficit <= 0:
+            continue
+        queries = CLUSTER_QUERIES.get(name, [])
         if not queries:
             continue
-
-        # Distribute deficit evenly across queries for this cluster
-        per_query = max(1, math.ceil(deficit / len(queries)))
-        # Cap at the given limit
-        per_query = min(per_query, limit_per_query)
-
+        per_query = max(3, math.ceil(deficit / len(queries)))
         for q in queries:
             plan.append({
                 "query": q["query"],
                 "category": q["category"],
-                "cluster": cluster,
+                "cluster": name,
                 "limit": per_query,
             })
 
     return plan
 
 
-def run_rebalance(
-    plan: list[dict],
-    auto_tag: bool = False,
-    dry_run: bool = False,
-):
-    """Execute the rebalance plan by running harvest queries."""
-    if not plan:
-        print("[rebalance] nothing to do — library is balanced")
-        return
+# ── Target balance score ────────────────────────────────────────────────────
+TARGET_BALANCE = 0.95          # stop when entropy ratio >= 95%
+MAX_ROUNDS = 20                # absolute safety cap
+STALE_ROUNDS_LIMIT = 3         # stop after N consecutive 0-ingest rounds
 
-    if dry_run:
-        print("[rebalance] DRY RUN — planned queries:\n")
-        for entry in plan:
-            print(f"  cluster={entry['cluster']:<20s} query='{entry['query']}'  limit={entry['limit']}")
-        print(f"\n[rebalance] total queries: {len(plan)}")
-        return
 
-    # Import harvest machinery
-    from harvest_sounds import build_pipeline, log_harvest, DEFAULT_SOURCES
+def _print(msg: str = ""):
+    """Print with immediate flush so GUI subprocess output is live."""
+    print(msg, flush=True)
+
+
+def run_rebalance(auto_tag: bool = False):
+    """
+    Fully-autonomous rebalance loop.
+
+    Analyse → plan → search/download/tag → repeat
+    until balance >= TARGET_BALANCE or sources are exhausted.
+    """
+    from harvest_sounds import build_pipeline, log_harvest
     from datetime import datetime, timezone
 
+    db = get_db()
     pipeline = build_pipeline(auto_tag=auto_tag)
     available_sources = list(pipeline._connectors.keys())
 
     total_ingested = 0
-    total_queries = 0
+    stale_streak = 0           # consecutive rounds with 0 new sounds
 
-    for entry in plan:
-        cluster = entry["cluster"]
-        query_text = entry["query"]
-        limit = entry["limit"]
+    for round_num in range(1, MAX_ROUNDS + 1):
+        # ── analyse ─────────────────────────────────────────────────
+        report = analyze_balance(db)
+        balance = report["balance_score"]
 
-        for source in available_sources:
-            total_queries += 1
-            print(f"\n[rebalance] cluster={cluster} query='{query_text}' source={source} limit={limit}")
+        _print(f"\n{'='*60}")
+        _print(f"  ROUND {round_num}/{MAX_ROUNDS}  |  balance={balance:.1%}  |  total={report['total']}")
+        _print(f"{'='*60}")
 
-            try:
-                count = pipeline.run(query=query_text, source_name=source, limit=limit)
-                total_ingested += count
-                log_harvest({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "query": query_text,
-                    "source": source,
-                    "category": entry["category"],
-                    "cluster_target": cluster,
-                    "limit": limit,
-                    "ingested": count,
-                    "status": "ok",
-                    "trigger": "rebalance",
-                })
-            except Exception as e:
-                print(f"[rebalance] ERROR: {e}")
-                log_harvest({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "query": query_text,
-                    "source": source,
-                    "category": entry["category"],
-                    "cluster_target": cluster,
-                    "limit": limit,
-                    "ingested": 0,
-                    "status": "error",
-                    "error": str(e),
-                    "trigger": "rebalance",
-                })
+        if balance >= TARGET_BALANCE:
+            _print(f"[rebalance] ✓ balance {balance:.1%} >= {TARGET_BALANCE:.0%} target — done!")
+            break
 
-    print(f"\n{'='*60}")
-    print(f"[rebalance] COMPLETE")
-    print(f"  queries run:   {total_queries}")
-    print(f"  total ingested: {total_ingested}")
-    print(f"{'='*60}")
+        plan = compute_rebalance_plan(report)
+        if not plan:
+            _print("[rebalance] ✓ all clusters at or above ideal — done!")
+            break
+
+        # Show what we're targeting this round
+        seen_clusters: dict[str, int] = {}
+        for entry in plan:
+            seen_clusters[entry["cluster"]] = seen_clusters.get(entry["cluster"], 0) + entry["limit"]
+        for cluster, total_need in seen_clusters.items():
+            c = report["clusters"][cluster]
+            _print(f"  → {cluster}: {c['count']} now, targeting +{total_need}")
+
+        # ── harvest ─────────────────────────────────────────────────
+        round_ingested = 0
+        for entry in plan:
+            cluster = entry["cluster"]
+            query_text = entry["query"]
+            limit = entry["limit"]
+
+            for source in available_sources:
+                _print(f"  [{cluster}] '{query_text}' via {source} (limit={limit}, page={round_num})")
+
+                try:
+                    count = pipeline.run(
+                        query=query_text, source_name=source,
+                        limit=limit, page=round_num,
+                    )
+                    round_ingested += count
+                    if count > 0:
+                        _print(f"    ✓ +{count} new sounds")
+                    log_harvest({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "query": query_text,
+                        "source": source,
+                        "category": entry["category"],
+                        "cluster_target": cluster,
+                        "limit": limit,
+                        "page": round_num,
+                        "ingested": count,
+                        "status": "ok",
+                        "trigger": "rebalance",
+                    })
+                except Exception as e:
+                    _print(f"    ERROR: {e}")
+                    log_harvest({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "query": query_text,
+                        "source": source,
+                        "category": entry["category"],
+                        "cluster_target": cluster,
+                        "limit": limit,
+                        "page": round_num,
+                        "ingested": 0,
+                        "status": "error",
+                        "error": str(e),
+                        "trigger": "rebalance",
+                    })
+
+        total_ingested += round_ingested
+        _print(f"\n  round {round_num}: +{round_ingested} this round, {total_ingested} total")
+
+        # Track stale rounds — but keep going for a few rounds because
+        # the next page might have fresh results
+        if round_ingested == 0:
+            stale_streak += 1
+            _print(f"  (stale round {stale_streak}/{STALE_ROUNDS_LIMIT})")
+            if stale_streak >= STALE_ROUNDS_LIMIT:
+                _print("[rebalance] sources exhausted — stopping")
+                break
+        else:
+            stale_streak = 0
+
+    # ── final report ────────────────────────────────────────────────
+    _print(f"\n{'='*60}")
+    _print(f"  REBALANCE COMPLETE — {total_ingested} new sounds ingested")
+    _print(f"{'='*60}")
+    report = analyze_balance(db)
+    print_balance_report(report)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Becoming library balance analyzer")
     parser.add_argument("--rebalance", action="store_true",
-                        help="Auto-harvest to fill underrepresented clusters")
-    parser.add_argument("--limit", type=int, default=5,
-                        help="Max results per rebalance query per source (default: 5)")
+                        help="Auto-harvest to fill underrepresented clusters until balanced")
     parser.add_argument("--auto-tag", action="store_true",
                         help="LLM-tag newly harvested sounds")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show plan without downloading")
     args = parser.parse_args()
 
-    db = get_db()
-    report = analyze_balance(db)
-    print_balance_report(report)
+    if not args.rebalance:
+        db = get_db()
+        report = analyze_balance(db)
+        print_balance_report(report)
+        return
 
-    if args.rebalance:
-        plan = compute_rebalance_plan(report, limit_per_query=args.limit)
-        if args.dry_run:
-            run_rebalance(plan, dry_run=True)
-        else:
-            if plan:
-                print(f"[rebalance] executing {len(plan)} targeted queries...")
-                if args.auto_tag:
-                    print("[rebalance] auto-tag enabled")
-            run_rebalance(plan, auto_tag=args.auto_tag, dry_run=False)
-
-            # Re-analyze after rebalance
-            print("\n[rebalance] post-harvest balance:")
-            report2 = analyze_balance(db)
-            print_balance_report(report2)
+    run_rebalance(auto_tag=args.auto_tag)
 
 
 if __name__ == "__main__":

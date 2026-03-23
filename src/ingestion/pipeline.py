@@ -21,7 +21,7 @@ class IngestionPipeline:
         self._connectors[connector.source_name] = connector
         print(f"[pipeline] registered source: {connector.source_name}")
 
-    def run(self, query: str, source_name: str, limit: int = None) -> int:
+    def run(self, query: str, source_name: str, limit: int = None, page: int = 1) -> int:
         """
         Full pipeline: search → filter → download → normalize → analyze → store.
         Returns number of assets successfully ingested.
@@ -38,11 +38,11 @@ class IngestionPipeline:
         # create job
         job_id = self.db.create_job(query, source_name, limit)
         self.db.update_job_status(job_id, JobStatus.running)
-        print(f"[pipeline] job {job_id} started | query='{query}' source={source_name}")
+        print(f"[pipeline] job {job_id} started | query='{query}' source={source_name} page={page}")
 
         ingested = 0
         try:
-            request = SourceSearchRequest(query=query, source_name=source_name, limit=limit, filters={
+            request = SourceSearchRequest(query=query, source_name=source_name, limit=limit, page=page, filters={
                 "min_duration": self.config.min_duration_sec,
                 "max_duration": self.config.max_duration_sec,
             })
@@ -78,6 +78,17 @@ class IngestionPipeline:
             return False
 
         candidate_id = self._store_candidate(job_id, result, CandidateStatus.discovered)
+
+        # Skip if this source item was already downloaded before
+        existing = self.db.conn.execute(
+            "SELECT a.id FROM audio_assets a "
+            "JOIN candidate_items c ON a.candidate_item_id = c.id "
+            "WHERE c.source_name = ? AND c.source_item_id = ?",
+            (result.source_name, result.source_item_id),
+        ).fetchone()
+        if existing:
+            self.db.update_candidate_status(candidate_id, CandidateStatus.filtered_out)
+            return False
 
         # download
         raw_path = os.path.join(

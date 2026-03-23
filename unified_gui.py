@@ -292,15 +292,10 @@ class UnifiedGUI(tk.Tk):
 
         ttk.Button(bal_row, text="Analyze Balance", command=self._analyze_balance).pack(side="left", padx=(0, 8))
 
-        ttk.Label(bal_row, text="Limit/query").pack(side="left", padx=(12, 4))
-        self.rebalance_limit_var = tk.IntVar(value=5)
-        ttk.Spinbox(bal_row, from_=1, to=50, textvariable=self.rebalance_limit_var, width=5).pack(side="left", padx=(0, 8))
-
         self.rebalance_auto_tag_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(bal_row, text="Auto-tag", variable=self.rebalance_auto_tag_var).pack(side="left", padx=(0, 8))
 
-        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left", padx=(0, 8))
-        ttk.Button(bal_row, text="Dry Run", command=self._run_rebalance_dry).pack(side="left")
+        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left")
 
         self._refresh_library()
 
@@ -579,22 +574,13 @@ class UnifiedGUI(tk.Tk):
         self.balance_text.configure(state="disabled")
 
     def _run_rebalance(self):
-        self._run_rebalance_cmd(dry_run=False)
-
-    def _run_rebalance_dry(self):
-        self._run_rebalance_cmd(dry_run=True)
-
-    def _run_rebalance_cmd(self, dry_run: bool = False):
         cmd = [
-            str(ROOT / ".venv" / "bin" / "python"),
+            str(ROOT / ".venv" / "bin" / "python"), "-u",
             str(ROOT / "balance.py"),
             "--rebalance",
-            "--limit", str(self.rebalance_limit_var.get()),
         ]
         if self.rebalance_auto_tag_var.get():
             cmd.append("--auto-tag")
-        if dry_run:
-            cmd.append("--dry-run")
         self._run_cmd_async("rebalance", cmd)
 
     # ------------------------------------------------------------------

@@ -68,7 +68,9 @@ def _load_audio_as_numpy(path: str, target_sr: int, mono: bool):
 
 
 def download_file(url: str, dest_path: str, api_key: str = "") -> bool:
-    headers = {}
+    headers = {
+        "User-Agent": "BecomingSoundEngine/1.0 (https://github.com/absybvc-cloud/Becoming; sound art project)",
+    }
     # Freesound preview URLs are public — sending an auth header can cause 401.
     # Only add the token header for non-preview download URLs.
     if api_key and "previews" not in url:

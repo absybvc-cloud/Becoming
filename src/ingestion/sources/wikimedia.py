@@ -14,13 +14,17 @@ class WikimediaConnector(BaseSourceConnector):
             "generator": "search",
             "gsrsearch": f"{request.query} filetype:audio",
             "gsrlimit": min(request.limit, 50),
+            "gsroffset": (request.page - 1) * min(request.limit, 50),
             "gsrnamespace": 6,
             "prop": "imageinfo|categories",
             "iiprop": "url|mime|size|extmetadata",
             "format": "json",
         }
+        headers = {
+            "User-Agent": "BecomingSoundEngine/1.0 (https://github.com/absybvc-cloud/Becoming; sound art project)",
+        }
         try:
-            resp = requests.get(WIKIMEDIA_API, params=params, timeout=15)
+            resp = requests.get(WIKIMEDIA_API, params=params, headers=headers, timeout=15)
             resp.raise_for_status()
             pages = resp.json().get("query", {}).get("pages", {})
         except Exception as e:

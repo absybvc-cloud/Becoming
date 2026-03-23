@@ -15,6 +15,7 @@ class FreesoundConnector(BaseSourceConnector):
         params = {
             "query": request.query,
             "page_size": min(request.limit, 150),
+            "page": request.page,
             "fields": (
                 "id,name,description,username,license,duration,"
                 "type,download,previews,tags"
