@@ -1,28 +1,40 @@
 #!/usr/bin/env python3
 """
-Unified GUI for Becoming.
+Becoming -- Atmospheric PySide6 Interface.
 
-Combines:
-- Engine control (start/stop, state, tension, density, mutate)
-- Sound ingest / harvest runner
-- Auto-tag runner
-- Library stats / quick status
-
-This is a light orchestration UI around existing scripts/modules.
+A shapeless, living, instrument-like interface for generative sound,
+drift state, and poem emergence.
 """
 
 from __future__ import annotations
 
+import json
+import math
+import os
 import queue
 import random
+import re
 import subprocess
-import threading
-import tkinter as tk
-from pathlib import Path
-from tkinter import messagebox, ttk
-
 import sys
-import os
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import (
+    QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal, Slot,
+)
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QFontMetrics, QLinearGradient,
+    QPainter, QPainterPath, QPen, QRadialGradient,
+)
+from PySide6.QtWidgets import (
+    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox,
+    QTextEdit, QVBoxLayout, QWidget, QComboBox, QLineEdit,
+    QCheckBox, QSizePolicy, QGraphicsOpacityEffect, QDialog,
+    QFormLayout, QGroupBox,
+)
 
 try:
     import mido
@@ -30,539 +42,955 @@ try:
 except ImportError:
     HAS_MIDI = False
 
-# Ensure project root imports work no matter where this is launched from.
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src.engine.library import SoundLibrary
 from src.engine.states import STATE_NAMES
 
-
-class UnifiedGUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Becoming - Unified Control")
-        self.geometry("1160x760")
-        self.minsize(980, 640)
-
-        self.engine_proc: subprocess.Popen | None = None
-        self.engine_reader_thread: threading.Thread | None = None
-        self.worker_threads: list[threading.Thread] = []
-        self._async_procs: dict[str, subprocess.Popen] = {}
-
-        self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
-
-        self._midi_port = None
-        self._midi_thread: threading.Thread | None = None
-
-        self._build_style()
-        self._build_ui()
-        self.after(100, self._drain_log_queue)
-        self._start_midi_listener()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
-
-    def _build_style(self):
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        bg = "#0f172a"
-        panel = "#111827"
-        fg = "#e5e7eb"
-        accent = "#0ea5e9"
-
-        self.configure(bg=bg)
-        style.configure("TFrame", background=bg)
-        style.configure("Panel.TFrame", background=panel)
-        style.configure("TLabel", background=bg, foreground=fg)
-        style.configure("Title.TLabel", font=("Avenir Next", 16, "bold"), foreground="#f8fafc", background=bg)
-        style.configure("CardTitle.TLabel", font=("Avenir Next", 12, "bold"), foreground="#f1f5f9", background=panel)
-        style.configure("TButton", font=("Avenir Next", 11))
-        style.configure("Accent.TButton", font=("Avenir Next", 11, "bold"))
-        style.map("Accent.TButton", background=[("active", "#0284c7"), ("!disabled", accent)], foreground=[("!disabled", "white")])
-
-        style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", font=("Avenir Next", 11, "bold"), padding=(14, 8))
-
-    def _build_ui(self):
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=14, pady=(12, 4))
-
-        ttk.Label(top, text="Becoming", style="Title.TLabel").pack(side="left")
-        self.status_var = tk.StringVar(value="Idle")
-        ttk.Label(top, textvariable=self.status_var).pack(side="right")
-
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True, padx=14, pady=(4, 8))
-
-        self.engine_tab = ttk.Frame(notebook)
-        self.ingest_tab = ttk.Frame(notebook)
-        self.tag_tab = ttk.Frame(notebook)
-        self.library_tab = ttk.Frame(notebook)
-
-        notebook.add(self.engine_tab, text="Engine")
-        notebook.add(self.ingest_tab, text="Ingest")
-        notebook.add(self.tag_tab, text="Auto Tag")
-        notebook.add(self.library_tab, text="Library")
-
-        self._build_engine_tab()
-        self._build_ingest_tab()
-        self._build_tag_tab()
-        self._build_library_tab()
-
-        log_wrap = ttk.Frame(self)
-        log_wrap.pack(fill="both", expand=False, padx=14, pady=(0, 12))
-        ttk.Label(log_wrap, text="Live Log").pack(anchor="w")
-
-        self.log_text = tk.Text(
-            log_wrap,
-            height=13,
-            wrap="word",
-            bg="#020617",
-            fg="#e2e8f0",
-            insertbackground="#e2e8f0",
-            font=("Menlo", 11),
-        )
-        self.log_text.pack(fill="both", expand=True)
-        self.log_text.configure(state="disabled")
-
-    def _build_engine_tab(self):
-        frame = ttk.Frame(self.engine_tab)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        card = ttk.Frame(frame, style="Panel.TFrame")
-        card.pack(fill="x", pady=(0, 10))
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(inner, text="Engine Controls", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
-
-        ttk.Label(inner, text="Initial State").grid(row=1, column=0, sticky="w")
-        self.state_var = tk.StringVar(value="submerged")
-        ttk.Combobox(inner, textvariable=self.state_var, values=STATE_NAMES, state="readonly", width=14).grid(row=1, column=1, padx=6)
-
-        ttk.Label(inner, text="Tension").grid(row=1, column=2, sticky="w")
-        self.tension_var = tk.DoubleVar(value=0.3)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.tension_var, orient="horizontal", length=170,
-                  command=lambda _: self._auto_apply_slider("t", self.tension_var)).grid(row=1, column=3, padx=6)
-
-        ttk.Label(inner, text="Density").grid(row=1, column=4, sticky="w")
-        self.density_var = tk.DoubleVar(value=0.5)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.density_var, orient="horizontal", length=170,
-                  command=lambda _: self._auto_apply_slider("d", self.density_var)).grid(row=1, column=5, padx=6)
-
-        ttk.Label(inner, text="Temperature").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.temperature_var = tk.DoubleVar(value=0.5)
-        ttk.Scale(inner, from_=0.0, to=1.0, variable=self.temperature_var, orient="horizontal", length=170,
-                  command=lambda _: self._auto_apply_slider("T", self.temperature_var)).grid(row=2, column=1, padx=6, pady=(8, 0))
-
-        self.start_engine_btn = ttk.Button(inner, text="Start Engine", style="Accent.TButton", command=self._start_engine)
-        self.start_engine_btn.grid(row=2, column=6, padx=(8, 4), pady=(8, 0))
-
-        self.stop_engine_btn = ttk.Button(inner, text="Stop Engine", command=self._stop_engine)
-        self.stop_engine_btn.grid(row=2, column=7, padx=(4, 0), pady=(8, 0))
-
-        runtime = ttk.Frame(frame, style="Panel.TFrame")
-        runtime.pack(fill="x")
-
-        run_inner = ttk.Frame(runtime)
-        run_inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(run_inner, text="Runtime Commands", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=10, sticky="w", pady=(0, 8))
-
-        ttk.Button(run_inner, text="Mutate Replace", command=lambda: self._send_engine_cmd("m")).grid(row=1, column=0, padx=4)
-        ttk.Button(run_inner, text="Rare Silence", command=lambda: self._send_engine_cmd("!")).grid(row=1, column=1, padx=4)
-
-        ttk.Label(run_inner, text="Force State").grid(row=1, column=2, padx=(18, 4), sticky="e")
-        self.force_state_var = tk.StringVar(value="drifting")
-        ttk.Combobox(run_inner, textvariable=self.force_state_var, values=STATE_NAMES, state="readonly", width=13).grid(row=1, column=3, padx=4)
-        ttk.Button(run_inner, text="Apply", command=lambda: self._send_engine_cmd(f"s {self.force_state_var.get()}\n")).grid(row=1, column=4, padx=4)
-
-        # ── Drift Engine card ──────────────────────────────────────────
-        drift_card = ttk.Frame(frame, style="Panel.TFrame")
-        drift_card.pack(fill="x", pady=(10, 0))
-
-        drift_inner = ttk.Frame(drift_card)
-        drift_inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(drift_inner, text="Drift Engine", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
-
-        self.drift_status_text = tk.Text(
-            drift_inner, height=6, wrap="word",
-            bg="#020617", fg="#e2e8f0", font=("Menlo", 10),
-        )
-        self.drift_status_text.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(0, 8))
-        self.drift_status_text.configure(state="disabled")
-
-        drift_btn_row = ttk.Frame(drift_inner)
-        drift_btn_row.grid(row=2, column=0, columnspan=8, sticky="w")
-
-        ttk.Button(drift_btn_row, text="Enter Drift", command=lambda: self._send_engine_cmd("p drift")).pack(side="left", padx=(0, 6))
-        ttk.Button(drift_btn_row, text="Force Collapse", command=lambda: self._send_engine_cmd("p collapse")).pack(side="left", padx=(0, 6))
-        ttk.Button(drift_btn_row, text="Stabilize", command=lambda: self._send_engine_cmd("p stabilize")).pack(side="left", padx=(0, 6))
-        ttk.Button(drift_btn_row, text="Refresh", command=self._refresh_drift_status).pack(side="left", padx=(0, 6))
-
-        # ── Phase duration scale slider ────────────────────────────────
-        dur_row = ttk.Frame(drift_inner)
-        dur_row.grid(row=3, column=0, columnspan=8, sticky="ew", pady=(10, 0))
-
-        ttk.Label(dur_row, text="Phase Duration Scale").pack(side="left", padx=(0, 8))
-        self.drift_dur_scale_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(dur_row, from_=0.1, to=3.0, variable=self.drift_dur_scale_var, orient="horizontal", length=200,
-                  command=lambda _: self._auto_apply_slider("dur", self.drift_dur_scale_var)).pack(side="left", padx=(0, 8))
-        self.drift_dur_scale_label = ttk.Label(dur_row, text="1.0x")
-        self.drift_dur_scale_label.pack(side="left")
-
-        def _update_dur_label(*_):
-            v = self.drift_dur_scale_var.get()
-            self.drift_dur_scale_label.config(text=f"{v:.1f}x")
-        self.drift_dur_scale_var.trace_add("write", _update_dur_label)
-
-        # ── Poem Making card ───────────────────────────────────────────
-        poem_card = ttk.Frame(frame, style="Panel.TFrame")
-        poem_card.pack(fill="x", pady=(10, 0))
-
-        poem_inner = ttk.Frame(poem_card)
-        poem_inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(poem_inner, text="Poem Making", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
-
-        self.poem_text = tk.Text(
-            poem_inner, height=8, wrap="word",
-            bg="#020617", fg="#a5b4fc", font=("Georgia", 12, "italic"),
-        )
-        self.poem_text.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(0, 8))
-        self.poem_text.configure(state="disabled")
-
-        poem_btn_row = ttk.Frame(poem_inner)
-        poem_btn_row.grid(row=2, column=0, columnspan=8, sticky="w")
-
-        self._poem_running = False
-        self._poem_thread: threading.Thread | None = None
-        self._poem_lines: list[str] = []
-        self._poem_beat_index = 0  # alternates ascending/descending
-
-        self.poem_start_btn = ttk.Button(poem_btn_row, text="Start Poem", style="Accent.TButton", command=self._toggle_poem)
-        self.poem_start_btn.pack(side="left", padx=(0, 8))
-
-        ttk.Label(poem_btn_row, text="Interval (s)").pack(side="left", padx=(0, 4))
-        self.poem_interval_var = tk.IntVar(value=15)
-        ttk.Spinbox(poem_btn_row, from_=5, to=60, textvariable=self.poem_interval_var, width=4).pack(side="left", padx=(0, 8))
-
-
-    def _build_ingest_tab(self):
-        frame = ttk.Frame(self.ingest_tab)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        card = ttk.Frame(frame, style="Panel.TFrame")
-        card.pack(fill="x")
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(inner, text="Harvest / Ingest", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
-
-        ttk.Label(inner, text="Limit / Query / Source").grid(row=1, column=0, sticky="w")
-
-        self.ingest_limit_var = tk.IntVar(value=3)
-        ttk.Spinbox(inner, from_=1, to=200, textvariable=self.ingest_limit_var, width=6).grid(row=1, column=1, padx=6)
-
-        self.ingest_query_var = tk.StringVar(value="")
-        ttk.Entry(inner, textvariable=self.ingest_query_var, width=36).grid(row=1, column=2, padx=6)
-
-        self.ingest_source_var = tk.StringVar(value="all")
-        ttk.Combobox(inner, textvariable=self.ingest_source_var, values=["all", "freesound", "internet_archive", "wikimedia"], state="readonly", width=16).grid(row=1, column=3, padx=6)
-
-        self.ingest_category_var = tk.StringVar(value="")
-        ttk.Entry(inner, textvariable=self.ingest_category_var, width=16).grid(row=1, column=4, padx=6)
-
-        self.ingest_dry_run = tk.BooleanVar(value=False)
-        ttk.Checkbutton(inner, text="Dry Run", variable=self.ingest_dry_run).grid(row=1, column=5, padx=6)
-
-        self.ingest_auto_tag = tk.BooleanVar(value=True)
-        ttk.Checkbutton(inner, text="Auto-tag", variable=self.ingest_auto_tag).grid(row=2, column=5, padx=6)
-
-        ttk.Button(inner, text="Run Harvest", style="Accent.TButton", command=self._run_harvest).grid(row=1, column=6, padx=8)
-
-        hint = (
-            "Leave query empty to run default curated batch. "
-            "Set category to filter default batch (e.g. drone, texture, field_recording)."
-        )
-        ttk.Label(inner, text=hint, wraplength=880).grid(row=2, column=0, columnspan=7, sticky="w", pady=(10, 2))
-
-    def _build_tag_tab(self):
-        frame = ttk.Frame(self.tag_tab)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        card = ttk.Frame(frame, style="Panel.TFrame")
-        card.pack(fill="x")
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(inner, text="Auto Tag (Ollama)", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
-
-        ttk.Label(inner, text="Model").grid(row=1, column=0, sticky="w")
-        self.tag_model_var = tk.StringVar(value="qwen3-coder:30b")
-        ttk.Entry(inner, textvariable=self.tag_model_var, width=28).grid(row=1, column=1, padx=6)
-
-        ttk.Label(inner, text="Limit").grid(row=1, column=2, sticky="w")
-        self.tag_limit_var = tk.IntVar(value=20)
-        ttk.Spinbox(inner, from_=0, to=10000, textvariable=self.tag_limit_var, width=8).grid(row=1, column=3, padx=6)
-
-        ttk.Label(inner, text="Asset ID (optional)").grid(row=1, column=4, sticky="w")
-        self.tag_asset_id_var = tk.StringVar(value="")
-        ttk.Entry(inner, textvariable=self.tag_asset_id_var, width=14).grid(row=1, column=5, padx=6)
-
-        self.tag_retag_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(inner, text="Retag existing", variable=self.tag_retag_var).grid(row=1, column=6, padx=6)
-
-        self.tag_dry_run_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(inner, text="Dry Run", variable=self.tag_dry_run_var).grid(row=1, column=7, padx=6)
-
-        ttk.Button(inner, text="Run Auto Tag", style="Accent.TButton", command=self._run_auto_tag).grid(row=2, column=7, pady=(10, 0), sticky="e")
-
-    def _build_library_tab(self):
-        frame = ttk.Frame(self.library_tab)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        card = ttk.Frame(frame, style="Panel.TFrame")
-        card.pack(fill="x")
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(inner, text="Library Snapshot", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-
-        self.lib_summary_var = tk.StringVar(value="Not loaded yet")
-        self.lib_detail_var = tk.StringVar(value="")
-
-        ttk.Label(inner, textvariable=self.lib_summary_var, font=("Avenir Next", 13, "bold")).grid(row=1, column=0, sticky="w")
-        ttk.Label(inner, textvariable=self.lib_detail_var, wraplength=880).grid(row=2, column=0, sticky="w", pady=(6, 10))
-
-        row = ttk.Frame(inner)
-        row.grid(row=3, column=0, sticky="w")
-
-        ttk.Button(row, text="Refresh Stats", command=self._refresh_library).pack(side="left", padx=(0, 8))
-        ttk.Button(row, text="Open Review Tool", command=self._open_review_tool).pack(side="left")
-
-        # ── Balance / Rebalance card ────────────────────────────────────
-        bal_card = ttk.Frame(frame, style="Panel.TFrame")
-        bal_card.pack(fill="x", pady=(10, 0))
-
-        bal_inner = ttk.Frame(bal_card)
-        bal_inner.pack(fill="x", padx=12, pady=12)
-
-        ttk.Label(bal_inner, text="Cluster Balance", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 8))
-
-        self.balance_text = tk.Text(
-            bal_inner, height=12, wrap="word",
-            bg="#020617", fg="#e2e8f0", font=("Menlo", 11),
-        )
-        self.balance_text.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(0, 8))
-        self.balance_text.configure(state="disabled")
-
-        bal_row = ttk.Frame(bal_inner)
-        bal_row.grid(row=2, column=0, columnspan=6, sticky="w")
-
-        ttk.Button(bal_row, text="Analyze Balance", command=self._analyze_balance).pack(side="left", padx=(0, 8))
-        ttk.Button(bal_row, text="Break Balance", command=self._break_balance).pack(side="left", padx=(0, 8))
-
-        self.rebalance_auto_tag_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(bal_row, text="Auto-tag", variable=self.rebalance_auto_tag_var).pack(side="left", padx=(0, 8))
-
-        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left", padx=(0, 8))
-        ttk.Button(bal_row, text="Stop", command=self._stop_rebalance).pack(side="left")
+# -- Color Palette (light theme: white bg, black/gray accents) ----
+BG_DEEP = "#ffffff"
+BG_PANEL = "#f5f5f5"
+BG_SURFACE = "#e8e8e8"
+FG_PRIMARY = "#1a1a1a"
+FG_DIM = "#666666"
+FG_WHISPER = "#999999"
+ACCENT_CYAN = "#404040"
+ACCENT_VIOLET = "#555555"
+ACCENT_AMBER = "#4a4a4a"
+ACCENT_RED = "#333333"
+ACCENT_GOLD = "#505050"
+POEM_FG = "#2a2a2a"
+POEM_FG_DIM = "#888888"
+
+STATE_COLORS = {
+    "submerged": "#c8c8c8",
+    "tense": "#b0b0b0",
+    "dissolved": "#c0c0c8",
+    "rupture": "#a8a8a8",
+    "drifting": "#bbb8c0",
+}
+
+# -- Global Stylesheet --
+GLOBAL_SS = f"""
+QMainWindow, QWidget {{
+    background-color: {BG_DEEP};
+    color: {FG_PRIMARY};
+    font-family: 'Avenir Next', 'Helvetica Neue', sans-serif;
+    font-size: 13px;
+}}
+QLabel {{
+    background: transparent;
+    border: none;
+}}
+QSlider::groove:horizontal {{
+    background: {BG_SURFACE};
+    height: 6px;
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    background: {FG_PRIMARY};
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}}
+QSlider::sub-page:horizontal {{
+    background: qlineargradient(x1:0, x2:1, stop:0 {FG_PRIMARY}, stop:1 {FG_DIM});
+    border-radius: 3px;
+}}
+QSpinBox {{
+    background: {BG_SURFACE};
+    border: 1px solid {FG_WHISPER};
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: {FG_PRIMARY};
+}}
+QComboBox {{
+    background: {BG_SURFACE};
+    border: 1px solid {FG_WHISPER};
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: {FG_PRIMARY};
+}}
+QComboBox::drop-down {{ border: none; }}
+QLineEdit {{
+    background: {BG_SURFACE};
+    border: 1px solid {FG_WHISPER};
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: {FG_PRIMARY};
+}}
+QCheckBox {{ color: {FG_DIM}; spacing: 6px; }}
+QTextEdit {{
+    background: {BG_DEEP};
+    border: none;
+    color: {FG_DIM};
+    font-family: 'Menlo', 'Courier New', monospace;
+    font-size: 11px;
+}}
+QScrollBar:vertical {{
+    background: {BG_DEEP};
+    width: 6px;
+}}
+QScrollBar::handle:vertical {{
+    background: {FG_WHISPER};
+    border-radius: 3px;
+    min-height: 20px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+"""
+
+
+class PillButton(QPushButton):
+    """Capsule-shaped button with glow hover."""
+
+    def __init__(self, text: str, color: str = ACCENT_CYAN, parent=None):
+        super().__init__(text, parent)
+        self._color = color
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(30)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color}22;
+                color: {color};
+                border: 1px solid {color}44;
+                border-radius: 15px;
+                padding: 4px 18px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {color}44;
+                border-color: {color}88;
+            }}
+            QPushButton:pressed {{
+                background-color: {color}66;
+            }}
+        """)
+
+
+# ================================================================
+# Influence Panel (left sidebar)
+# ================================================================
+
+class _SemanticSlider(QWidget):
+    """Labeled slider with poetic name and value readout."""
+    valueChanged = Signal(float)
+
+    def __init__(self, label: str, lo: float, hi: float, default: float,
+                 decimals: int = 2, parent=None):
+        super().__init__(parent)
+        self._lo, self._hi, self._dec = lo, hi, decimals
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(2)
+
+        top = QHBoxLayout()
+        self._name_lbl = QLabel(label)
+        self._name_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 11px;")
+        self._val_lbl = QLabel(f"{default:.{decimals}f}")
+        self._val_lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 11px;")
+        self._val_lbl.setAlignment(Qt.AlignRight)
+        top.addWidget(self._name_lbl)
+        top.addWidget(self._val_lbl)
+        lay.addLayout(top)
+
+        self._slider = QSlider(Qt.Horizontal)
+        self._slider.setRange(0, 1000)
+        self._slider.setValue(self._to_slider(default))
+        self._slider.valueChanged.connect(self._on_change)
+        lay.addWidget(self._slider)
+
+    def _to_slider(self, v: float) -> int:
+        return int((v - self._lo) / (self._hi - self._lo) * 1000)
+
+    def _from_slider(self, v: int) -> float:
+        return self._lo + (v / 1000.0) * (self._hi - self._lo)
+
+    def _on_change(self, v: int):
+        val = self._from_slider(v)
+        self._val_lbl.setText(f"{val:.{self._dec}f}")
+        self.valueChanged.emit(val)
+
+    def value(self) -> float:
+        return self._from_slider(self._slider.value())
+
+    def setValue(self, v: float):
+        self._slider.blockSignals(True)
+        self._slider.setValue(self._to_slider(v))
+        self._val_lbl.setText(f"{v:.{self._dec}f}")
+        self._slider.blockSignals(False)
+
+
+class InfluencePanel(QWidget):
+    """Left sidebar: state tokens, semantic sliders, intervention pills."""
+
+    # Signals that the main window connects to
+    sliderChanged = Signal(str, float)   # (cmd, value)
+    interventionClicked = Signal(str)    # engine command string
+    engineStartRequested = Signal()
+    engineStopRequested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(340)
+        self.setStyleSheet(f"background-color: {BG_PANEL};")
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(6)
+
+        # -- Title --
+        title = QLabel("becoming")
+        title.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 20px; font-weight: 300; letter-spacing: 5px;")
+        lay.addWidget(title)
+        lay.addSpacing(14)
+
+        # -- State tokens --
+        state_lbl = QLabel("lean into")
+        state_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(state_lbl)
+
+        self._state_btns: dict[str, QPushButton] = {}
+        state_grid = QVBoxLayout()
+        state_grid.setSpacing(8)
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        for i, name in enumerate(STATE_NAMES):
+            btn = QPushButton(name)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(28)
+            color = STATE_COLORS.get(name, BG_SURFACE)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color}88;
+                    color: {FG_PRIMARY};
+                    border: 1px solid {color};
+                    border-radius: 14px;
+                    padding: 2px 8px;
+                    font-size: 11px;
+                }}
+                QPushButton:hover {{ background-color: {color}cc; }}
+            """)
+            btn.clicked.connect(lambda checked=False, n=name: self.interventionClicked.emit(f"s {n}"))
+            if i < 2:
+                row1.addWidget(btn, stretch=1)
+            else:
+                row2.addWidget(btn, stretch=1)
+            self._state_btns[name] = btn
+        state_grid.addLayout(row1)
+        state_grid.addLayout(row2)
+        lay.addLayout(state_grid)
+        lay.addSpacing(18)
+
+        # -- Semantic sliders --
+        slider_lbl = QLabel("influence")
+        slider_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(slider_lbl)
+        lay.addSpacing(4)
+
+        self.strain_slider = _SemanticSlider("strain", 0.0, 1.0, 0.3)
+        self.strain_slider.valueChanged.connect(lambda v: self.sliderChanged.emit("t", v))
+        lay.addWidget(self.strain_slider)
+
+        self.saturation_slider = _SemanticSlider("saturation", 0.0, 1.0, 0.5)
+        self.saturation_slider.valueChanged.connect(lambda v: self.sliderChanged.emit("d", v))
+        lay.addWidget(self.saturation_slider)
+
+        self.heat_slider = _SemanticSlider("heat", 0.0, 1.0, 0.5)
+        self.heat_slider.valueChanged.connect(lambda v: self.sliderChanged.emit("T", v))
+        lay.addWidget(self.heat_slider)
+
+        self.timescale_slider = _SemanticSlider("time scale", 0.1, 3.0, 1.0, decimals=1)
+        self.timescale_slider.valueChanged.connect(lambda v: self.sliderChanged.emit("dur", v))
+        lay.addWidget(self.timescale_slider)
+
+        lay.addSpacing(20)
+
+        # -- Intervention pills --
+        int_lbl = QLabel("interventions")
+        int_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(int_lbl)
+        lay.addSpacing(4)
+
+        interventions = [
+            ("introduce rupture", "m", ACCENT_RED),
+            ("invite silence", "!", ACCENT_VIOLET),
+            ("enter drift", "p drift", ACCENT_VIOLET),
+            ("force collapse", "p collapse", ACCENT_AMBER),
+            ("stabilize", "p stabilize", ACCENT_CYAN),
+        ]
+        for label, cmd, color in interventions:
+            btn = PillButton(label, color)
+            btn.clicked.connect(lambda checked=False, c=cmd: self.interventionClicked.emit(c))
+            lay.addWidget(btn)
+            lay.addSpacing(2)
+
+        lay.addSpacing(20)
+
+        # -- Engine controls --
+        eng_lbl = QLabel("engine")
+        eng_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(eng_lbl)
+        lay.addSpacing(4)
+
+        self.start_btn = PillButton("awaken", ACCENT_CYAN)
+        self.start_btn.clicked.connect(self.engineStartRequested.emit)
+        lay.addWidget(self.start_btn)
+
+        self.stop_btn = PillButton("silence", ACCENT_RED)
+        self.stop_btn.clicked.connect(self.engineStopRequested.emit)
+        lay.addWidget(self.stop_btn)
+        lay.addSpacing(6)
+
+        # -- Initial state selector --
+        init_row = QHBoxLayout()
+        init_lbl = QLabel("initial state")
+        init_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px;")
+        init_row.addWidget(init_lbl)
+        self.init_state_combo = QComboBox()
+        self.init_state_combo.addItems(STATE_NAMES)
+        self.init_state_combo.setCurrentText("submerged")
+        self.init_state_combo.setFixedWidth(120)
+        init_row.addWidget(self.init_state_combo)
+        lay.addLayout(init_row)
+
+        lay.addStretch()
+
+        # -- Poem controls --
+        poem_lbl = QLabel("poem")
+        poem_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(poem_lbl)
+        lay.addSpacing(4)
+
+        poem_row = QHBoxLayout()
+        self.poem_toggle_btn = PillButton("begin poem", ACCENT_GOLD)
+        poem_row.addWidget(self.poem_toggle_btn)
+
+        int_lbl2 = QLabel("interval")
+        int_lbl2.setStyleSheet(f"color: {FG_DIM}; font-size: 10px;")
+        poem_row.addWidget(int_lbl2)
+        self.poem_interval_spin = QSpinBox()
+        self.poem_interval_spin.setRange(5, 60)
+        self.poem_interval_spin.setValue(15)
+        self.poem_interval_spin.setSuffix("s")
+        self.poem_interval_spin.setFixedWidth(60)
+        poem_row.addWidget(self.poem_interval_spin)
+        lay.addLayout(poem_row)
+
+        # -- Tools buttons --
+        lay.addSpacing(12)
+        tools_lbl = QLabel("tools")
+        tools_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(tools_lbl)
+        lay.addSpacing(4)
+
+        self.harvest_btn = PillButton("harvest", ACCENT_CYAN)
+        lay.addWidget(self.harvest_btn)
+
+        tools_row = QHBoxLayout()
+        tools_row.setSpacing(6)
+        self.rebalance_btn = PillButton("rebalance", ACCENT_VIOLET)
+        tools_row.addWidget(self.rebalance_btn)
+        self.break_bal_btn = PillButton("break balance", ACCENT_AMBER)
+        tools_row.addWidget(self.break_bal_btn)
+        lay.addLayout(tools_row)
+
+        tools_row2 = QHBoxLayout()
+        tools_row2.setSpacing(6)
+        self.autotag_btn = PillButton("auto tag", FG_DIM)
+        tools_row2.addWidget(self.autotag_btn)
+        self.library_btn = PillButton("library", FG_DIM)
+        tools_row2.addWidget(self.library_btn)
+        lay.addLayout(tools_row2)
+
+
+# ================================================================
+# Drift Field (center visualization)
+# ================================================================
+
+class _Particle:
+    """A single orb in the drift field."""
+    __slots__ = ("x", "y", "vx", "vy", "radius", "color", "alpha", "life", "max_life")
+
+    def __init__(self, x: float, y: float, color: str, radius: float = 4.0):
+        self.x = x
+        self.y = y
+        self.vx = random.uniform(-0.3, 0.3)
+        self.vy = random.uniform(-0.3, 0.3)
+        self.radius = radius
+        self.color = color
+        self.alpha = 0.0  # fade in
+        self.life = 0.0
+        self.max_life = random.uniform(8.0, 20.0)
+
+
+class DriftFieldWidget(QWidget):
+    """Animated particle/constellation canvas showing active drift state."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 300)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self._particles: list[_Particle] = []
+        self._phase_text = ""
+        self._focus_text = ""
+        self._desires: dict[str, float] = {}
+        self._fatigue: dict[str, float] = {}
+        self._tension = 0.3
+        self._density = 0.5
+        self._temperature = 0.5
+        self._phase_remaining = 0.0
+        self._dur_scale = 1.0
+
+        self._breath_phase = 0.0  # slow oscillation
+        self._tick = 0
+        self._poem_lines: list[tuple[str, str]] = []  # (timestamp, text)
+        self._max_poem_lines = 200
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._update_field)
+        self._timer.start(33)  # ~30fps
+
+    def add_poem_line(self, timestamp: str, text: str):
+        """Add a poem line to the drift field overlay."""
+        self._poem_lines.append((timestamp, text))
+        if len(self._poem_lines) > self._max_poem_lines:
+            self._poem_lines = self._poem_lines[-self._max_poem_lines:]
+
+    def update_snapshot(self, snap: dict):
+        """Called when a [drift-snapshot] arrives from engine."""
+        self._phase_text = snap.get("phase", "")
+        self._focus_text = snap.get("focus", "") or ""
+        self._desires = snap.get("desires", {})
+        self._fatigue = snap.get("fatigue", {})
+        self._phase_remaining = snap.get("phase_remaining", 0)
+        self._dur_scale = snap.get("duration_scale", 1.0)
+
+    def set_params(self, tension: float, density: float, temperature: float):
+        self._tension = tension
+        self._density = density
+        self._temperature = temperature
+
+    def _update_field(self):
+        self._tick += 1
+        self._breath_phase += 0.02
+
+        # Spawn particles based on density
+        target_count = int(10 + self._density * 40)
+        while len(self._particles) < target_count:
+            w, h = self.width(), self.height()
+            cx, cy = w / 2, h / 2
+            angle = random.uniform(0, 2 * math.pi)
+            dist = random.uniform(0, min(w, h) * 0.35)
+            x = cx + math.cos(angle) * dist
+            y = cy + math.sin(angle) * dist
+            color = random.choice(["#1a1a1a", "#404040", "#606060", "#808080"])
+            r = random.uniform(2.0, 5.0 + self._tension * 4)
+            self._particles.append(_Particle(x, y, color, r))
+
+        # Update particles
+        dt = 0.033
+        for p in self._particles:
+            p.life += dt
+            # Fade in / out
+            if p.life < 1.0:
+                p.alpha = min(1.0, p.life)
+            elif p.life > p.max_life - 2.0:
+                p.alpha = max(0.0, (p.max_life - p.life) / 2.0)
+            else:
+                p.alpha = 0.7 + 0.3 * math.sin(p.life * 0.5)
+
+            # Motion — tension increases speed, temperature adds jitter
+            speed = 0.2 + self._tension * 1.5
+            jitter = self._temperature * 0.4
+            p.vx += random.uniform(-jitter, jitter) * dt
+            p.vy += random.uniform(-jitter, jitter) * dt
+            # Gentle pull toward center
+            cx, cy = self.width() / 2, self.height() / 2
+            dx, dy = cx - p.x, cy - p.y
+            dist = math.sqrt(dx * dx + dy * dy) + 1
+            p.vx += dx / dist * 0.02
+            p.vy += dy / dist * 0.02
+            # Damping
+            p.vx *= 0.98
+            p.vy *= 0.98
+            p.x += p.vx * speed
+            p.y += p.vy * speed
+
+        # Remove dead particles
+        self._particles = [p for p in self._particles if p.life < p.max_life]
+
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Background gradient (light)
+        grad = QRadialGradient(w / 2, h / 2, max(w, h) * 0.6)
+        grad.setColorAt(0, QColor("#fafafa"))
+        grad.setColorAt(1, QColor("#eeeeee"))
+        painter.fillRect(0, 0, w, h, grad)
+
+        # Draw particles
+        for p in self._particles:
+            c = QColor(p.color)
+            c.setAlphaF(p.alpha * 0.8)
+            painter.setPen(Qt.NoPen)
+
+            # Glow
+            glow = QRadialGradient(p.x, p.y, p.radius * 3)
+            gc = QColor(p.color)
+            gc.setAlphaF(p.alpha * 0.15)
+            glow.setColorAt(0, gc)
+            gc2 = QColor(p.color)
+            gc2.setAlphaF(0)
+            glow.setColorAt(1, gc2)
+            painter.setBrush(QBrush(glow))
+            painter.drawEllipse(QPointF(p.x, p.y), p.radius * 3, p.radius * 3)
+
+            # Core
+            painter.setBrush(QBrush(c))
+            painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
+
+        # Phase text (floating, center-top)
+        if self._phase_text:
+            breath = 0.5 + 0.5 * math.sin(self._breath_phase)
+            font = QFont("Avenir Next", 14)
+            font.setWeight(QFont.Light)
+            painter.setFont(font)
+            c = QColor(FG_DIM)
+            c.setAlphaF(0.3 + 0.2 * breath)
+            painter.setPen(c)
+            phase_str = self._phase_text
+            if self._focus_text:
+                phase_str += f"  :  {self._focus_text}"
+            painter.drawText(QRectF(0, 20, w, 30), Qt.AlignHCenter, phase_str)
+
+        # Desire bars (bottom area, subtle)
+        if self._desires:
+            bar_y = h - 80
+            bar_h = 4
+            names = sorted(self._desires, key=lambda n: -self._desires[n])
+            for i, name in enumerate(names[:6]):
+                d = self._desires[name]
+                f = self._fatigue.get(name, 0)
+                bar_w = min(d / 5.0, 1.0) * (w * 0.5)
+                x0 = (w - w * 0.5) / 2
+                y0 = bar_y + i * 12
+
+                # Desire bar
+                c = QColor("#404040")
+                c.setAlphaF(0.25)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(c))
+                painter.drawRoundedRect(QRectF(x0, y0, bar_w, bar_h), 2, 2)
+
+                # Label
+                font = QFont("Avenir Next", 9)
+                painter.setFont(font)
+                lc = QColor(FG_WHISPER)
+                lc.setAlphaF(0.6)
+                painter.setPen(lc)
+                painter.drawText(QRectF(x0 - 100, y0 - 3, 95, 12), Qt.AlignRight, name)
+
+                # Focus marker
+                if name == self._focus_text:
+                    gc = QColor("#1a1a1a")
+                    gc.setAlphaF(0.6)
+                    painter.setPen(gc)
+                    painter.drawText(QRectF(x0 + bar_w + 4, y0 - 3, 20, 12), Qt.AlignLeft, "*")
+
+        # Duration scale indicator
+        if self._dur_scale != 1.0:
+            font = QFont("Avenir Next", 10)
+            painter.setFont(font)
+            c = QColor(FG_WHISPER)
+            c.setAlphaF(0.4)
+            painter.setPen(c)
+            painter.drawText(QRectF(w - 80, 20, 70, 20), Qt.AlignRight, f"{self._dur_scale:.1f}x")
+
+        # -- Poem overlay (right side) --
+        if self._poem_lines:
+            poem_x = w * 0.35
+            poem_w = w * 0.60
+            poem_font = QFont("Georgia", 13)
+            poem_font.setItalic(True)
+            painter.setFont(poem_font)
+            fm = QFontMetrics(poem_font)
+
+            # Calculate wrapped height per line (bottom-up layout)
+            entries = []
+            for ts, text in self._poem_lines:
+                br = fm.boundingRect(QRectF(0, 0, poem_w, 1000).toRect(),
+                                     Qt.AlignLeft | Qt.TextWordWrap, text)
+                entries.append((ts, text, br.height() + 8))
+
+            # Walk backwards from bottom, fitting as many as possible
+            total_h = 0
+            visible = []
+            for entry in reversed(entries):
+                if total_h + entry[2] > h - 60:
+                    break
+                visible.insert(0, entry)
+                total_h += entry[2]
+
+            y_pos = h - 30 - total_h
+            for idx, (ts, text, eh) in enumerate(visible):
+                age = len(visible) - 1 - idx  # 0 = newest
+                if age == 0:
+                    alpha = 0.85
+                elif age < 3:
+                    alpha = 0.55
+                elif age < 6:
+                    alpha = 0.30
+                elif age < 12:
+                    alpha = 0.15
+                else:
+                    alpha = 0.07
+                c = QColor(POEM_FG)
+                c.setAlphaF(alpha)
+                painter.setPen(c)
+                painter.setFont(poem_font)
+                painter.drawText(QRectF(poem_x, y_pos, poem_w, eh), Qt.AlignLeft | Qt.TextWordWrap, text)
+                # Tiny timestamp
+                ts_font = QFont("Avenir Next", 8)
+                painter.setFont(ts_font)
+                tc = QColor(FG_WHISPER)
+                tc.setAlphaF(alpha * 0.4)
+                painter.setPen(tc)
+                painter.drawText(QRectF(poem_x - 40, y_pos + 2, 36, 16), Qt.AlignRight, ts)
+                y_pos += eh
+
+        painter.end()
+
+
+# ================================================================
+# Poem Field (right panel)
+# ================================================================
+
+class PoemWidget(QWidget):
+    """Living text emergence with fading lines."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(360)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self._lines: list[tuple[str, str, float]] = []  # (timestamp, text, birth_time)
+        self._max_lines = 200
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(0)
+
+        hdr = QLabel("poem")
+        hdr.setStyleSheet(f"color: {FG_WHISPER}; font-size: 10px; letter-spacing: 2px;")
+        lay.addWidget(hdr)
+        lay.addSpacing(8)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(f"QScrollArea {{ background: transparent; border: none; }}")
+
+        self._container = QWidget()
+        self._container.setStyleSheet("background: transparent;")
+        self._container_lay = QVBoxLayout(self._container)
+        self._container_lay.setContentsMargins(0, 0, 0, 0)
+        self._container_lay.setSpacing(6)
+        self._container_lay.addStretch()
+
+        self._scroll.setWidget(self._container)
+        lay.addWidget(self._scroll)
+
+    def add_line(self, timestamp: str, text: str):
+        """Add a new poem line with fade-in."""
+        birth = time.time()
+        self._lines.append((timestamp, text, birth))
+        if len(self._lines) > self._max_lines:
+            self._lines = self._lines[-self._max_lines:]
+
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"""
+            color: {POEM_FG};
+            font-family: 'Georgia', 'Times New Roman', serif;
+            font-size: 14px;
+            font-style: italic;
+            background: transparent;
+            padding: 2px 0;
+        """)
+
+        ts_lbl = QLabel(timestamp)
+        ts_lbl.setStyleSheet(f"color: {POEM_FG_DIM}; font-size: 9px; background: transparent;")
+
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        row_lay = QVBoxLayout(row)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(1)
+        row_lay.addWidget(ts_lbl)
+        row_lay.addWidget(lbl)
+
+        # Insert before the stretch
+        count = self._container_lay.count()
+        self._container_lay.insertWidget(count - 1, row)
+
+        # Fade older lines
+        self._fade_old_lines()
+
+        # Auto-scroll
+        QTimer.singleShot(50, lambda: self._scroll.verticalScrollBar().setValue(
+            self._scroll.verticalScrollBar().maximum()))
+
+    def _fade_old_lines(self):
+        """Reduce opacity of older lines."""
+        count = self._container_lay.count() - 1  # minus stretch
+        for i in range(count):
+            widget = self._container_lay.itemAt(i).widget()
+            if widget is None:
+                continue
+            age = count - 1 - i  # 0 = newest
+            if age == 0:
+                opacity = 1.0
+            elif age < 4:
+                opacity = 0.7
+            elif age < 8:
+                opacity = 0.45
+            elif age < 15:
+                opacity = 0.25
+            else:
+                opacity = 0.12
+            effect = QGraphicsOpacityEffect(widget)
+            effect.setOpacity(opacity)
+            widget.setGraphicsEffect(effect)
+
+
+# ================================================================
+# Whisper Bar + Debug Log (bottom)
+# ================================================================
+
+class WhisperBar(QWidget):
+    """Bottom status bar with collapsible debug log."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self._expanded = False
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 4, 16, 8)
+        lay.setSpacing(4)
+
+        # Whisper row
+        row = QHBoxLayout()
+        self._status_lbl = QLabel("idle")
+        self._status_lbl.setStyleSheet(f"color: {FG_WHISPER}; font-size: 11px;")
+        row.addWidget(self._status_lbl)
+
+        row.addStretch()
+
+        self._toggle_btn = QPushButton("trace")
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {FG_WHISPER};
+                background: transparent;
+                border: none;
+                font-size: 10px;
+                padding: 2px 8px;
+            }}
+            QPushButton:hover {{ color: {FG_DIM}; }}
+        """)
+        self._toggle_btn.clicked.connect(self._toggle_debug)
+        row.addWidget(self._toggle_btn)
+        lay.addLayout(row)
+
+        # Debug log (hidden by default)
+        self._debug_log = QTextEdit()
+        self._debug_log.setReadOnly(True)
+        self._debug_log.setMaximumHeight(200)
+        self._debug_log.setVisible(False)
+        self._debug_log.setStyleSheet(f"""
+            QTextEdit {{
+                background: {BG_DEEP};
+                color: {FG_WHISPER};
+                font-family: 'Menlo', 'Courier New', monospace;
+                font-size: 10px;
+                border: 1px solid {BG_SURFACE};
+                border-radius: 4px;
+            }}
+        """)
+        lay.addWidget(self._debug_log)
+
+    def set_status(self, text: str):
+        self._status_lbl.setText(text)
+
+    def append_log(self, source: str, line: str):
+        self._debug_log.append(f"[{source}] {line}")
+        # Trim to ~500 lines
+        doc = self._debug_log.document()
+        if doc.blockCount() > 500:
+            cursor = self._debug_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor, doc.blockCount() - 500)
+            cursor.removeSelectedText()
+
+    def _toggle_debug(self):
+        self._expanded = not self._expanded
+        self._debug_log.setVisible(self._expanded)
+        self._toggle_btn.setText("hide trace" if self._expanded else "trace")
+
+    def toggle_from_shortcut(self):
+        self._toggle_debug()
+
+
+# ================================================================
+# Tools Dialog (secondary panel for ingest/tag/library)
+# ================================================================
+
+class ToolsDialog(QDialog):
+    """Modal dialog grouping Harvest, Auto-tag, Library, Balance tools."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("tools")
+        self.setMinimumSize(720, 520)
+        self.setStyleSheet(f"background-color: {BG_DEEP}; color: {FG_PRIMARY}; border: 1px solid {BG_SURFACE};")
+        self._parent = parent
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(16)
+
+        # -- Harvest --
+        hg = QGroupBox("harvest")
+        hg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        hlay = QFormLayout(hg)
+        self.ingest_limit = QSpinBox(); self.ingest_limit.setRange(1, 200); self.ingest_limit.setValue(3)
+        self.ingest_query = QLineEdit()
+        self.ingest_source = QComboBox(); self.ingest_source.addItems(["all", "freesound", "internet_archive", "wikimedia"])
+        self.ingest_category = QLineEdit()
+        self.ingest_dry_run = QCheckBox("dry run")
+        self.ingest_auto_tag = QCheckBox("auto-tag"); self.ingest_auto_tag.setChecked(True)
+        hlay.addRow("limit", self.ingest_limit)
+        hlay.addRow("query", self.ingest_query)
+        hlay.addRow("source", self.ingest_source)
+        hlay.addRow("category", self.ingest_category)
+        opts = QHBoxLayout()
+        opts.addWidget(self.ingest_dry_run); opts.addWidget(self.ingest_auto_tag)
+        hlay.addRow("", opts)
+        harvest_btn = PillButton("run harvest", ACCENT_CYAN)
+        harvest_btn.clicked.connect(self._run_harvest)
+        hlay.addRow("", harvest_btn)
+        lay.addWidget(hg)
+
+        # -- Auto Tag --
+        tg = QGroupBox("auto tag")
+        tg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        tlay = QFormLayout(tg)
+        self.tag_model = QLineEdit("qwen3-coder:30b")
+        self.tag_limit = QSpinBox(); self.tag_limit.setRange(0, 10000); self.tag_limit.setValue(20)
+        self.tag_asset_id = QLineEdit()
+        self.tag_retag = QCheckBox("retag existing")
+        self.tag_dry_run = QCheckBox("dry run")
+        tlay.addRow("model", self.tag_model)
+        tlay.addRow("limit", self.tag_limit)
+        tlay.addRow("asset id", self.tag_asset_id)
+        topts = QHBoxLayout()
+        topts.addWidget(self.tag_retag); topts.addWidget(self.tag_dry_run)
+        tlay.addRow("", topts)
+        tag_btn = PillButton("run auto tag", ACCENT_VIOLET)
+        tag_btn.clicked.connect(self._run_auto_tag)
+        tlay.addRow("", tag_btn)
+        lay.addWidget(tg)
+
+        # -- Library --
+        lg = QGroupBox("library")
+        lg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        llib = QVBoxLayout(lg)
+        self.lib_summary_lbl = QLabel("not loaded")
+        self.lib_summary_lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 13px;")
+        llib.addWidget(self.lib_summary_lbl)
+        lib_row = QHBoxLayout()
+        refresh_btn = PillButton("refresh stats", ACCENT_CYAN)
+        refresh_btn.clicked.connect(self._refresh_library)
+        lib_row.addWidget(refresh_btn)
+        review_btn = PillButton("open review tool", FG_DIM)
+        review_btn.clicked.connect(self._open_review_tool)
+        lib_row.addWidget(review_btn)
+        lib_row.addStretch()
+        llib.addLayout(lib_row)
+
+        # Balance
+        bal_row = QHBoxLayout()
+        analyze_btn = PillButton("analyze balance", ACCENT_CYAN)
+        analyze_btn.clicked.connect(self._analyze_balance)
+        bal_row.addWidget(analyze_btn)
+        break_btn = PillButton("break balance", ACCENT_AMBER)
+        break_btn.clicked.connect(self._break_balance)
+        bal_row.addWidget(break_btn)
+        self.rebalance_auto_tag = QCheckBox("auto-tag"); self.rebalance_auto_tag.setChecked(True)
+        bal_row.addWidget(self.rebalance_auto_tag)
+        rebal_btn = PillButton("rebalance", ACCENT_VIOLET)
+        rebal_btn.clicked.connect(self._run_rebalance)
+        bal_row.addWidget(rebal_btn)
+        stop_btn = PillButton("stop", ACCENT_RED)
+        stop_btn.clicked.connect(self._stop_rebalance)
+        bal_row.addWidget(stop_btn)
+        bal_row.addStretch()
+        llib.addLayout(bal_row)
+
+        self.balance_text = QTextEdit()
+        self.balance_text.setReadOnly(True)
+        self.balance_text.setMaximumHeight(160)
+        llib.addWidget(self.balance_text)
+        lay.addWidget(lg)
 
         self._refresh_library()
 
-    # ------------------------------------------------------------------
-    # Engine actions
-    # ------------------------------------------------------------------
-
-    def _auto_apply_slider(self, cmd: str, var: tk.DoubleVar):
-        """Send slider value to running engine automatically on change."""
-        if self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
-            try:
-                self.engine_proc.stdin.write(f"{cmd} {var.get():.3f}\n")
-                self.engine_proc.stdin.flush()
-            except Exception:
-                pass
-
-    def _start_engine(self):
-        if self.engine_proc and self.engine_proc.poll() is None:
-            messagebox.showinfo("Engine", "Engine is already running.")
-            return
-
-        cmd = [
-            str(ROOT / ".venv" / "bin" / "python"),
-            str(ROOT / "engine.py"),
-            "--state",
-            self.state_var.get(),
-            "--tension",
-            f"{self.tension_var.get():.3f}",
-            "--density",
-            f"{self.density_var.get():.3f}",
-            "--temperature",
-            f"{self.temperature_var.get():.3f}",
-        ]
-
-        try:
-            self.engine_proc = subprocess.Popen(
-                cmd,
-                cwd=str(ROOT),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-        except Exception as e:
-            messagebox.showerror("Engine", f"Failed to start engine:\n{e}")
-            return
-
-        self.status_var.set("Engine running")
-        self._log("engine", f"started: {' '.join(cmd)}")
-        self._start_engine_output_reader()
-
-    def _start_engine_output_reader(self):
-        if not self.engine_proc or not self.engine_proc.stdout:
-            return
-
-        def read_loop():
-            proc = self.engine_proc
-            if not proc or not proc.stdout:
-                return
-            for line in proc.stdout:
-                self.log_queue.put(("engine", line.rstrip("\n")))
-            code = proc.poll()
-            self.log_queue.put(("engine", f"[process exited code={code}]") )
-            self.log_queue.put(("status", "Engine stopped"))
-
-        self.engine_reader_thread = threading.Thread(target=read_loop, daemon=True)
-        self.engine_reader_thread.start()
-
-    def _send_engine_cmd(self, cmd: str):
-        if not self.engine_proc or self.engine_proc.poll() is not None or not self.engine_proc.stdin:
-            messagebox.showwarning("Engine", "Engine is not running.")
-            return
-
-        if not cmd.endswith("\n"):
-            cmd = cmd + "\n"
-
-        try:
-            self.engine_proc.stdin.write(cmd)
-            self.engine_proc.stdin.flush()
-            self._log("engine", f"> {cmd.strip()}")
-        except Exception as e:
-            messagebox.showerror("Engine", f"Failed to send command:\n{e}")
-
-    def _stop_engine(self):
-        if not self.engine_proc or self.engine_proc.poll() is not None:
-            self.status_var.set("Engine stopped")
-            return
-
-        try:
-            if self.engine_proc.stdin:
-                self.engine_proc.stdin.write("q\n")
-                self.engine_proc.stdin.flush()
-        except Exception:
-            pass
-
-        try:
-            self.engine_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.engine_proc.terminate()
-
-        self.status_var.set("Engine stopped")
-        self._log("engine", "stop requested")
-
-    # ------------------------------------------------------------------
-    # Background command runners
-    # ------------------------------------------------------------------
-
+    # -- Delegate actions to parent (BecomingWindow) --
     def _run_harvest(self):
-        cmd = [str(ROOT / ".venv" / "bin" / "python"), str(ROOT / "harvest_sounds.py"), "--limit", str(self.ingest_limit_var.get())]
-
-        query = self.ingest_query_var.get().strip()
-        source = self.ingest_source_var.get().strip()
-        category = self.ingest_category_var.get().strip()
-
-        if query:
-            cmd.extend(["--queries", query])
-        if source and source != "all":
-            cmd.extend(["--source", source])
-        if category:
-            cmd.extend(["--category", category])
-        if self.ingest_dry_run.get():
-            cmd.append("--dry-run")
-        if self.ingest_auto_tag.get():
-            cmd.append("--auto-tag")
-
-        self._run_cmd_async("harvest", cmd)
+        if not self._parent:
+            return
+        cmd = [str(ROOT / ".venv" / "bin" / "python"), str(ROOT / "harvest_sounds.py"),
+               "--limit", str(self.ingest_limit.value())]
+        q = self.ingest_query.text().strip()
+        s = self.ingest_source.currentText()
+        c = self.ingest_category.text().strip()
+        if q: cmd.extend(["--queries", q])
+        if s and s != "all": cmd.extend(["--source", s])
+        if c: cmd.extend(["--category", c])
+        if self.ingest_dry_run.isChecked(): cmd.append("--dry-run")
+        if self.ingest_auto_tag.isChecked(): cmd.append("--auto-tag")
+        self._parent._run_cmd_async("harvest", cmd)
 
     def _run_auto_tag(self):
-        cmd = [
-            str(ROOT / ".venv" / "bin" / "python"),
-            str(ROOT / "auto_tag.py"),
-            "--model",
-            self.tag_model_var.get().strip() or "qwen3-coder:30b",
-            "--limit",
-            str(self.tag_limit_var.get()),
-        ]
-
-        asset_id = self.tag_asset_id_var.get().strip()
-        if asset_id:
-            cmd.extend(["--asset-id", asset_id])
-        if self.tag_retag_var.get():
-            cmd.append("--retag")
-        if self.tag_dry_run_var.get():
-            cmd.append("--dry-run")
-
-        self._run_cmd_async("auto_tag", cmd)
-
-    def _run_cmd_async(self, label: str, cmd: list[str]):
-        self._log(label, f"running: {' '.join(cmd)}")
-
-        def worker():
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(ROOT),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                self._async_procs[label] = proc
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    self.log_queue.put((label, line.rstrip("\n")))
-                code = proc.wait()
-                self._async_procs.pop(label, None)
-                self.log_queue.put((label, f"[done exit={code}]") )
-                if label == "harvest" and code == 0:
-                    self.log_queue.put(("status", "Harvest complete"))
-                elif label == "auto_tag" and code == 0:
-                    self.log_queue.put(("status", "Auto-tag complete"))
-            except Exception as e:
-                self._async_procs.pop(label, None)
-                self.log_queue.put((label, f"ERROR: {e}"))
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        self.worker_threads.append(t)
-
-    # ------------------------------------------------------------------
-    # Library / Review
-    # ------------------------------------------------------------------
+        if not self._parent:
+            return
+        cmd = [str(ROOT / ".venv" / "bin" / "python"), str(ROOT / "auto_tag.py"),
+               "--model", self.tag_model.text().strip() or "qwen3-coder:30b",
+               "--limit", str(self.tag_limit.value())]
+        aid = self.tag_asset_id.text().strip()
+        if aid: cmd.extend(["--asset-id", aid])
+        if self.tag_retag.isChecked(): cmd.append("--retag")
+        if self.tag_dry_run.isChecked(): cmd.append("--dry-run")
+        self._parent._run_cmd_async("auto_tag", cmd)
 
     def _refresh_library(self):
         try:
@@ -570,61 +998,29 @@ class UnifiedGUI(tk.Tk):
             lib.load()
             summary = lib.summary()
             total = sum(summary.values())
-            self.lib_summary_var.set(f"{total} sounds loaded")
-            self.lib_detail_var.set(
-                f"ground={summary.get('ground', 0)} | "
-                f"texture={summary.get('texture', 0)} | "
-                f"event={summary.get('event', 0)} | "
-                f"pulse={summary.get('pulse', 0)}"
-            )
-            self._log("library", f"summary: total={total} {summary}")
+            parts = " | ".join(f"{k}={v}" for k, v in sorted(summary.items()))
+            self.lib_summary_lbl.setText(f"{total} sounds  :  {parts}")
         except Exception as e:
-            self.lib_summary_var.set("Failed to load library")
-            self.lib_detail_var.set(str(e))
-            self._log("library", f"ERROR: {e}")
+            self.lib_summary_lbl.setText(f"error: {e}")
 
     def _open_review_tool(self):
-        cmd = [str(ROOT / ".venv" / "bin" / "python"), "-m", "review_tool.gui"]
-        self._run_cmd_async("review_tool", cmd)
+        if self._parent:
+            cmd = [str(ROOT / ".venv" / "bin" / "python"), "-m", "review_tool.gui"]
+            self._parent._run_cmd_async("review_tool", cmd)
 
-    # ------------------------------------------------------------------
-    # Logging
-    # ------------------------------------------------------------------
-
-    def _log(self, source: str, line: str):
-        self.log_queue.put((source, line))
-
-    def _drain_log_queue(self):
-        try:
-            while True:
-                source, line = self.log_queue.get_nowait()
-                if source == "status":
-                    self.status_var.set(line)
-                    continue
-                # Intercept drift-snapshot JSON and display in drift panel
-                if "[drift-snapshot]" in line:
-                    self._handle_drift_snapshot(line)
-                # Intercept poem-words JSON for poem generation
-                if "[poem-words]" in line:
-                    self._handle_poem_words(line)
-                    continue  # don't clutter the log
-                self._append_log_line(source, line)
-        except queue.Empty:
-            pass
-        self.after(120, self._drain_log_queue)
-
-    def _append_log_line(self, source: str, line: str):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", f"[{source}] {line}\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
-
-    # ------------------------------------------------------------------
-    # Balance / Rebalance
-    # ------------------------------------------------------------------
+    def _analyze_balance(self):
+        def worker():
+            try:
+                from balance import analyze_balance, get_db
+                db = get_db()
+                report = analyze_balance(db)
+                text = self._format_balance(report)
+                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(text))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(f"ERROR: {e}"))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _break_balance(self):
-        """Pick a random non-uniform shape and re-analyze balance against it."""
         def worker():
             try:
                 from balance import analyze_balance, get_db
@@ -632,7 +1028,6 @@ class UnifiedGUI(tk.Tk):
                     _convergent, _bipolar, _cascade, _hollow, _surge, _drought, _normalize,
                 )
                 from src.engine.vectors import CLUSTER_DEFS
-
                 clusters = sorted(CLUSTER_DEFS.keys())
                 shape_makers = [
                     lambda c=clusters: _convergent(c, random.choice(c)),
@@ -643,206 +1038,400 @@ class UnifiedGUI(tk.Tk):
                     lambda c=clusters: _drought(c),
                 ]
                 shape = random.choice(shape_makers)()
-
                 db = get_db()
                 report = analyze_balance(db, target_shape=shape)
-
-                lines = []
-                lines.append(f"Total assets: {report['total']}")
-                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}  ({report.get('entropy_score', 0):.1%})")
-                lines.append(f"Shape: {report.get('shape_name', 'uniform')}  |  Shape score: {report['balance_score']:.1%}")
-                lines.append("")
-
-                for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
-                    s = report["clusters"][name]
-                    bar = "█" * int(s["pct"] / 2)
-                    deficit_str = f"  (need +{s['deficit']})" if s["deficit"] > 0 else ""
-                    lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit_str}")
-
-                if report["underrepresented"]:
-                    lines.append("")
-                    lines.append("⚠ Under-represented (vs broken shape):")
-                    for item in report["underrepresented"]:
-                        lines.append(f"  {item['cluster']}: {item['count']} sounds (need +{item['deficit']})")
-                else:
-                    lines.append("")
-                    lines.append("✓ Distribution matches broken shape")
-
-                text = "\n".join(lines)
-                self.after(0, lambda: self._set_balance_text(text))
-                self.log_queue.put(("balance", f"BREAK → shape={report.get('shape_name', 'uniform')} score={report['balance_score']:.1%}"))
+                text = self._format_balance(report)
+                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(text))
             except Exception as e:
-                self.after(0, lambda: self._set_balance_text(f"ERROR: {e}"))
-                self.log_queue.put(("balance", f"ERROR: {e}"))
-
+                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(f"ERROR: {e}"))
         threading.Thread(target=worker, daemon=True).start()
 
-    def _analyze_balance(self):
-        """Run balance analysis and display in the text widget."""
+    def _format_balance(self, report: dict) -> str:
+        lines = []
+        lines.append(f"Total: {report['total']}  Entropy: {report['entropy']:.3f}/{report['max_entropy']:.3f} ({report.get('entropy_score',0):.1%})")
+        lines.append(f"Shape: {report.get('shape_name','uniform')}  Score: {report['balance_score']:.1%}")
+        lines.append("")
+        for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
+            s = report["clusters"][name]
+            bar = "=" * int(s["pct"] / 2)
+            deficit = f" (+{s['deficit']})" if s["deficit"] > 0 else ""
+            lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit}")
+        return "\n".join(lines)
+
+    def _run_rebalance(self):
+        if not self._parent:
+            return
+        cmd = [str(ROOT / ".venv" / "bin" / "python"), "-u", str(ROOT / "balance.py"), "--rebalance"]
+        if self.rebalance_auto_tag.isChecked():
+            cmd.append("--auto-tag")
+        self._parent._run_cmd_async("rebalance", cmd)
+
+    def _stop_rebalance(self):
+        if self._parent:
+            proc = self._parent._async_procs.get("rebalance")
+            if proc and proc.poll() is None:
+                proc.terminate()
+                self._parent._log("rebalance", "stopped by user")
+
+
+# ================================================================
+# Main Window
+# ================================================================
+
+class BecomingWindow(QMainWindow):
+    """The main atmospheric interface."""
+
+    _log_signal = Signal(str, str)  # (source, line) — thread-safe log
+    _midi_signal = Signal(str, str, float)  # (slider_attr, cmd, value)
+    _poem_line_signal = Signal(str, str)  # (timestamp, text)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("becoming")
+        self.setMinimumSize(1200, 920)
+        self.resize(1600, 1120)
+
+        self.engine_proc: subprocess.Popen | None = None
+        self.engine_reader_thread: threading.Thread | None = None
+        self._async_procs: dict[str, subprocess.Popen] = {}
+        self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+
+        self._midi_port = None
+        self._midi_thread: threading.Thread | None = None
+
+        self._poem_running = False
+        self._poem_thread: threading.Thread | None = None
+        self._poem_lines: list[str] = []
+        self._poem_beat_index = 0
+
+        self._tools_dialog: ToolsDialog | None = None
+
+        self._build_layout()
+        self._connect_signals()
+
+        # Log drain timer
+        self._log_timer = QTimer(self)
+        self._log_timer.timeout.connect(self._drain_log_queue)
+        self._log_timer.start(120)
+
+        self._start_midi_listener()
+        self._midi_signal.connect(self._apply_midi)
+        self._poem_line_signal.connect(self._add_poem_to_drift)
+
+    def _build_layout(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_lay = QVBoxLayout(central)
+        main_lay.setContentsMargins(0, 0, 0, 0)
+        main_lay.setSpacing(0)
+
+        # Main horizontal: influence | drift field | poem
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
+        self._influence = InfluencePanel()
+        # Wrap influence panel in scroll area so it never clips
+        influence_scroll = QScrollArea()
+        influence_scroll.setWidget(self._influence)
+        influence_scroll.setWidgetResizable(True)
+        influence_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        influence_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        influence_scroll.setFixedWidth(self._influence.width() + 6)
+        influence_scroll.setStyleSheet(f"QScrollArea {{ background: {BG_PANEL}; border: none; }}")
+        body.addWidget(influence_scroll)
+
+        self._drift = DriftFieldWidget()
+        body.addWidget(self._drift, stretch=1)
+
+        main_lay.addLayout(body, stretch=1)
+
+        # Whisper bar
+        self._whisper = WhisperBar()
+        main_lay.addWidget(self._whisper)
+
+    def _connect_signals(self):
+        self._influence.sliderChanged.connect(self._on_slider)
+        self._influence.interventionClicked.connect(self._send_engine_cmd)
+        self._influence.engineStartRequested.connect(self._start_engine)
+        self._influence.engineStopRequested.connect(self._stop_engine)
+        self._influence.poem_toggle_btn.clicked.connect(self._toggle_poem)
+        self._influence.harvest_btn.clicked.connect(self._open_harvest)
+        self._influence.autotag_btn.clicked.connect(self._open_autotag)
+        self._influence.library_btn.clicked.connect(self._open_library)
+        self._influence.rebalance_btn.clicked.connect(self._run_rebalance_quick)
+        self._influence.break_bal_btn.clicked.connect(self._break_balance_quick)
+
+    def keyPressEvent(self, event):
+        # Ctrl+D or backtick toggles debug log
+        if event.key() == Qt.Key_D and event.modifiers() & Qt.ControlModifier:
+            self._whisper.toggle_from_shortcut()
+        elif event.key() == Qt.Key_QuoteLeft:
+            self._whisper.toggle_from_shortcut()
+        else:
+            super().keyPressEvent(event)
+
+    def _open_tools(self):
+        if self._tools_dialog is None:
+            self._tools_dialog = ToolsDialog(self)
+        self._tools_dialog.show()
+        self._tools_dialog.raise_()
+
+    def _open_harvest(self):
+        self._open_tools()
+        # Scroll/focus to harvest section if needed
+
+    def _open_autotag(self):
+        self._open_tools()
+
+    def _open_library(self):
+        self._open_tools()
+
+    def _run_rebalance_quick(self):
+        """Run rebalance with auto-tag directly."""
+        cmd = [str(ROOT / ".venv" / "bin" / "python"), "-u",
+               str(ROOT / "balance.py"), "--rebalance", "--auto-tag"]
+        self._run_cmd_async("rebalance", cmd)
+
+    def _break_balance_quick(self):
+        """Run break balance analysis in background."""
         def worker():
             try:
                 from balance import analyze_balance, get_db
+                from balance_shapes import (
+                    _convergent, _bipolar, _cascade, _hollow, _surge, _drought,
+                )
+                from src.engine.vectors import CLUSTER_DEFS
+                clusters = sorted(CLUSTER_DEFS.keys())
+                shape_makers = [
+                    lambda c=clusters: _convergent(c, random.choice(c)),
+                    lambda c=clusters: _bipolar(c, *random.sample(c, 2)),
+                    lambda c=clusters: _cascade(c, random.sample(c, len(c))),
+                    lambda c=clusters: _hollow(c, random.sample(c, max(2, len(c) // 3))),
+                    lambda c=clusters: _surge(c),
+                    lambda c=clusters: _drought(c),
+                ]
+                shape = random.choice(shape_makers)()
                 db = get_db()
-                report = analyze_balance(db)
-
-                lines = []
-                lines.append(f"Total assets: {report['total']}")
-                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}  ({report.get('entropy_score', 0):.1%})")
-                lines.append(f"Shape: {report.get('shape_name', 'uniform')}  |  Shape score: {report['balance_score']:.1%}")
-                lines.append("")
-
-                for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
-                    s = report["clusters"][name]
-                    bar = "█" * int(s["pct"] / 2)
-                    deficit_str = f"  (need +{s['deficit']})" if s["deficit"] > 0 else ""
-                    lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit_str}")
-
-                if report["underrepresented"]:
-                    lines.append("")
-                    lines.append("⚠ Under-represented (vs current shape):")
-                    for item in report["underrepresented"]:
-                        lines.append(f"  {item['cluster']}: {item['count']} sounds (need +{item['deficit']})")
-                else:
-                    lines.append("")
-                    lines.append("✓ Distribution matches current shape")
-
-                text = "\n".join(lines)
-                self.after(0, lambda: self._set_balance_text(text))
-                self.log_queue.put(("balance", f"shape={report.get('shape_name', 'uniform')} score={report['balance_score']:.1%}"))
+                report = analyze_balance(db, target_shape=shape)
+                name = report.get("shape_name", "uniform")
+                score = report["balance_score"]
+                self.log_queue.put(("balance", f"BREAK -> shape={name} score={score:.1%}"))
             except Exception as e:
-                self.after(0, lambda: self._set_balance_text(f"ERROR: {e}"))
                 self.log_queue.put(("balance", f"ERROR: {e}"))
-
         threading.Thread(target=worker, daemon=True).start()
 
-    def _set_balance_text(self, text: str):
-        self.balance_text.configure(state="normal")
-        self.balance_text.delete("1.0", "end")
-        self.balance_text.insert("1.0", text)
-        self.balance_text.configure(state="disabled")
+    # ------------------------------------------------------------------
+    # Slider / Engine interaction
+    # ------------------------------------------------------------------
 
-    def _run_rebalance(self):
-        if "rebalance" in self._async_procs:
-            self._log("rebalance", "already running")
+    def _on_slider(self, cmd: str, value: float):
+        """Send slider change to running engine."""
+        if self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
+            try:
+                self.engine_proc.stdin.write(f"{cmd} {value:.3f}\n")
+                self.engine_proc.stdin.flush()
+            except Exception:
+                pass
+        # Update drift field params
+        if cmd == "t":
+            self._drift.set_params(value, self._drift._density, self._drift._temperature)
+        elif cmd == "d":
+            self._drift.set_params(self._drift._tension, value, self._drift._temperature)
+        elif cmd == "T":
+            self._drift.set_params(self._drift._tension, self._drift._density, value)
+
+    def _start_engine(self):
+        if self.engine_proc and self.engine_proc.poll() is None:
+            QMessageBox.information(self, "Engine", "Engine is already running.")
             return
+
+        state = self._influence.init_state_combo.currentText()
+        tension = self._influence.strain_slider.value()
+        density = self._influence.saturation_slider.value()
+        temp = self._influence.heat_slider.value()
+
         cmd = [
-            str(ROOT / ".venv" / "bin" / "python"), "-u",
-            str(ROOT / "balance.py"),
-            "--rebalance",
+            str(ROOT / ".venv" / "bin" / "python"),
+            str(ROOT / "engine.py"),
+            "--state", state,
+            "--tension", f"{tension:.3f}",
+            "--density", f"{density:.3f}",
+            "--temperature", f"{temp:.3f}",
         ]
-        if self.rebalance_auto_tag_var.get():
-            cmd.append("--auto-tag")
-        self._run_cmd_async("rebalance", cmd)
 
-    def _stop_rebalance(self):
-        proc = self._async_procs.get("rebalance")
-        if proc and proc.poll() is None:
-            proc.terminate()
-            self._log("rebalance", "stopped by user")
-        else:
-            self._log("rebalance", "not running")
+        try:
+            self.engine_proc = subprocess.Popen(
+                cmd, cwd=str(ROOT),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Engine", f"Failed to start engine:\n{e}")
+            return
+
+        self._whisper.set_status("engine running")
+        self._log("engine", f"started: {' '.join(cmd)}")
+        self._start_engine_reader()
+
+    def _start_engine_reader(self):
+        if not self.engine_proc or not self.engine_proc.stdout:
+            return
+        def read_loop():
+            proc = self.engine_proc
+            if not proc or not proc.stdout:
+                return
+            for line in proc.stdout:
+                self.log_queue.put(("engine", line.rstrip("\n")))
+            code = proc.poll()
+            self.log_queue.put(("engine", f"[process exited code={code}]"))
+            self.log_queue.put(("status", "engine stopped"))
+        self.engine_reader_thread = threading.Thread(target=read_loop, daemon=True)
+        self.engine_reader_thread.start()
+
+    def _send_engine_cmd(self, cmd: str):
+        if not self.engine_proc or self.engine_proc.poll() is not None or not self.engine_proc.stdin:
+            return
+        if not cmd.endswith("\n"):
+            cmd = cmd + "\n"
+        try:
+            self.engine_proc.stdin.write(cmd)
+            self.engine_proc.stdin.flush()
+            self._log("engine", f"> {cmd.strip()}")
+        except Exception:
+            pass
+
+    def _stop_engine(self):
+        if not self.engine_proc or self.engine_proc.poll() is not None:
+            self._whisper.set_status("engine stopped")
+            return
+        try:
+            if self.engine_proc.stdin:
+                self.engine_proc.stdin.write("q\n")
+                self.engine_proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            self.engine_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.engine_proc.terminate()
+        self._whisper.set_status("engine stopped")
+        self._log("engine", "stop requested")
 
     # ------------------------------------------------------------------
-    # Drift Engine
+    # Async command runner
     # ------------------------------------------------------------------
 
-    def _refresh_drift_status(self):
-        """Request drift snapshot from the running engine."""
-        self._send_engine_cmd("D")
+    def _run_cmd_async(self, label: str, cmd: list[str]):
+        self._log(label, f"running: {' '.join(cmd)}")
+        def worker():
+            try:
+                proc = subprocess.Popen(
+                    cmd, cwd=str(ROOT),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                self._async_procs[label] = proc
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    self.log_queue.put((label, line.rstrip("\n")))
+                code = proc.wait()
+                self._async_procs.pop(label, None)
+                self.log_queue.put((label, f"[done exit={code}]"))
+            except Exception as e:
+                self._async_procs.pop(label, None)
+                self.log_queue.put((label, f"ERROR: {e}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def _log(self, source: str, line: str):
+        self.log_queue.put((source, line))
+
+    def _drain_log_queue(self):
+        try:
+            for _ in range(50):  # process up to 50 per tick
+                source, line = self.log_queue.get_nowait()
+                if source == "status":
+                    self._whisper.set_status(line)
+                    continue
+                if "[drift-snapshot]" in line:
+                    self._handle_drift_snapshot(line)
+                if "[poem-words]" in line:
+                    self._handle_poem_words(line)
+                self._whisper.append_log(source, line)
+        except queue.Empty:
+            pass
 
     def _handle_drift_snapshot(self, line: str):
-        """Parse [drift-snapshot] JSON and update the drift panel."""
-        import json
         try:
             idx = line.index("[drift-snapshot]")
             raw = line[idx + len("[drift-snapshot]"):].strip()
             snap = json.loads(raw)
+            self._drift.update_snapshot(snap)
         except (ValueError, json.JSONDecodeError):
-            return
+            pass
 
-        lines = []
-        lines.append(f"Phase: {snap.get('phase', '?')}  |  Focus: {snap.get('focus') or 'none'}  |  Next phase in: {snap.get('phase_remaining', 0):.0f}s  |  Scale: {snap.get('duration_scale', 1.0):.1f}x")
-        lines.append("")
-
-        desires = snap.get("desires", {})
-        fatigue = snap.get("fatigue", {})
-
-        # Color coding in text: Red = high desire, Blue = fatigued, Gold = focus
-        focus = snap.get("focus")
-        for name in sorted(desires, key=lambda n: -desires[n]):
-            d = desires[name]
-            f = fatigue.get(name, 0)
-            bar_len = int(min(d, 5.0) * 6)  # 5.0 max → 30 chars
-            bar = "█" * bar_len
-            marker = " ★" if name == focus else ""
-            lines.append(f"  {name:<20s} desire={d:5.2f}  fatigue={f:.2f}  {bar}{marker}")
-
-        self._set_drift_text("\n".join(lines))
-
-    def _set_drift_text(self, text: str):
-        self.drift_status_text.configure(state="normal")
-        self.drift_status_text.delete("1.0", "end")
-        self.drift_status_text.insert("1.0", text)
-        self.drift_status_text.configure(state="disabled")
+    def _refresh_drift_status(self):
+        self._send_engine_cmd("D")
 
     # ------------------------------------------------------------------
     # MIDI
     # ------------------------------------------------------------------
 
-    # CC number → (tk.DoubleVar attr name, engine command, min, max)
-    # SINCO SMC-Mixer: CC 40-43 = four knobs/faders, CC 52 = fifth
     MIDI_CC_MAP: dict[int, tuple[str, str, float, float]] = {
-        40: ("tension_var", "t", 0.0, 1.0),
-        41: ("density_var", "d", 0.0, 1.0),
-        42: ("temperature_var", "T", 0.0, 1.0),
-        43: ("drift_dur_scale_var", "dur", 0.1, 3.0),
+        40: ("strain_slider", "t", 0.0, 1.0),
+        41: ("saturation_slider", "d", 0.0, 1.0),
+        42: ("heat_slider", "T", 0.0, 1.0),
+        43: ("timescale_slider", "dur", 0.1, 3.0),
     }
-
-    # Preferred MIDI port name (use Private to avoid duplicate messages from Master)
     MIDI_PREFERRED_PORT = "Private"
 
     def _start_midi_listener(self):
         if not HAS_MIDI:
+            self.log_queue.put(("midi", "mido not installed — MIDI disabled"))
             return
+        self.log_queue.put(("midi", "starting listener (CC 40-43)..."))
         self._midi_thread = threading.Thread(target=self._midi_loop, daemon=True)
         self._midi_thread.start()
 
     def _midi_loop(self):
-        """Background thread: open the preferred MIDI input and forward CC messages."""
         while True:
             try:
                 names = mido.get_input_names()
-            except Exception:
+            except Exception as e:
+                self.log_queue.put(("midi", f"get_input_names failed: {e}"))
                 return
             if not names:
-                import time
+                self.log_queue.put(("midi", "no MIDI devices found, retrying..."))
                 time.sleep(5)
                 continue
-
-            # Prefer port whose name contains MIDI_PREFERRED_PORT
             chosen = names[0]
             for n in names:
                 if self.MIDI_PREFERRED_PORT in n:
                     chosen = n
                     break
-
             try:
                 self._midi_port = mido.open_input(chosen)
                 self.log_queue.put(("midi", f"connected: {chosen}"))
             except Exception as e:
-                self.log_queue.put(("midi", f"failed to open {names[0]}: {e}"))
-                import time
+                self.log_queue.put(("midi", f"open failed: {e}"))
                 time.sleep(5)
                 continue
-
             try:
                 for msg in self._midi_port:
-                    if msg.type == "control_change" and msg.control in self.MIDI_CC_MAP:
-                        var_name, cmd, lo, hi = self.MIDI_CC_MAP[msg.control]
-                        value = lo + (msg.value / 127.0) * (hi - lo)
-                        self.after(0, self._apply_midi_cc, var_name, cmd, value)
-            except Exception:
-                pass
+                    if msg.type == "control_change":
+                        if msg.control in self.MIDI_CC_MAP:
+                            slider_attr, cmd, lo, hi = self.MIDI_CC_MAP[msg.control]
+                            value = lo + (msg.value / 127.0) * (hi - lo)
+                            self.log_queue.put(("midi", f"CC{msg.control}→{cmd}={value:.3f}"))
+                            self._midi_signal.emit(slider_attr, cmd, value)
+                        else:
+                            self.log_queue.put(("midi", f"unmapped CC{msg.control} val={msg.value} ch={msg.channel}"))
+            except Exception as e:
+                self.log_queue.put(("midi", f"read error: {e}"))
             finally:
                 try:
                     if self._midi_port:
@@ -850,16 +1439,16 @@ class UnifiedGUI(tk.Tk):
                 except Exception:
                     pass
                 self._midi_port = None
-            import time
             time.sleep(2)
 
-    def _apply_midi_cc(self, var_name: str, cmd: str, value: float):
-        """Update the tkinter variable and send the engine command (runs on main thread)."""
-        var: tk.DoubleVar = getattr(self, var_name, None)
-        if var is None:
-            return
-        var.set(round(value, 3))
-        self._auto_apply_slider(cmd, var)
+    def _apply_midi(self, slider_attr: str, cmd: str, value: float):
+        slider = getattr(self._influence, slider_attr, None)
+        if slider:
+            slider.setValue(round(value, 3))
+        self._on_slider(cmd, value)
+
+    def _add_poem_to_drift(self, ts: str, line: str):
+        self._drift.add_poem_line(ts, line)
 
     # ------------------------------------------------------------------
     # Poem Making
@@ -868,41 +1457,41 @@ class UnifiedGUI(tk.Tk):
     def _toggle_poem(self):
         if self._poem_running:
             self._poem_running = False
-            self.poem_start_btn.config(text="Start Poem")
+            self._influence.poem_toggle_btn.setText("begin poem")
             self._log("poem", "stopped")
         else:
             if not self.engine_proc or self.engine_proc.poll() is not None:
-                messagebox.showwarning("Poem", "Engine must be running to generate poems.")
+                QMessageBox.warning(self, "Poem", "Engine must be running.")
                 return
             self._poem_running = True
-            self.poem_start_btn.config(text="Stop Poem")
+            self._influence.poem_toggle_btn.setText("end poem")
             self._log("poem", "started")
             self._poem_thread = threading.Thread(target=self._poem_loop, daemon=True)
             self._poem_thread.start()
 
     def _poem_loop(self):
-        import time as _time
         while self._poem_running:
             if self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
                 try:
                     self.engine_proc.stdin.write("poem\n")
                     self.engine_proc.stdin.flush()
-                except Exception:
-                    pass
-            interval = max(5, self.poem_interval_var.get())
+                    self.log_queue.put(("poem", "sent poem request to engine"))
+                except Exception as e:
+                    self.log_queue.put(("poem", f"send failed: {e}"))
+            else:
+                self.log_queue.put(("poem", "engine not running, skipping"))
+            interval = max(5, self._influence.poem_interval_spin.value())
             for _ in range(interval * 10):
                 if not self._poem_running:
                     return
-                _time.sleep(0.1)
+                time.sleep(0.1)
 
     def _handle_poem_words(self, line: str):
-        """Parse [poem-words] JSON, call Ollama in a thread, append poem line."""
-        import json as _json
         try:
             idx = line.index("[poem-words]")
             raw = line[idx + len("[poem-words]"):].strip()
-            blob = _json.loads(raw)
-        except (ValueError, _json.JSONDecodeError):
+            blob = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
             return
 
         def worker():
@@ -910,15 +1499,12 @@ class UnifiedGUI(tk.Tk):
                 from poem_maker import harvest_words, build_poem_prompt, generate_line
                 words_str = harvest_words(blob)
                 beat = "ascending" if self._poem_beat_index % 2 == 0 else "descending"
-                # AABB couplet: even index = free line, odd index = rhyme with previous
                 rhyme_word = None
                 if self._poem_beat_index % 2 == 1 and self._poem_lines:
-                    # Extract last word of previous line as rhyme target
-                    import re as _re
-                    prev = self._poem_lines[-1]
-                    words_in_prev = _re.findall(r"[a-zA-Z]+", prev)
+                    words_in_prev = re.findall(r"[a-zA-Z]+", self._poem_lines[-1])
                     if words_in_prev:
                         rhyme_word = words_in_prev[-1].lower()
+                self.log_queue.put(("poem", f"generating (beat={beat}, words={words_str[:40]}...)"))
                 prompt = build_poem_prompt(
                     words_str,
                     blob.get("state", "drifting"),
@@ -929,55 +1515,67 @@ class UnifiedGUI(tk.Tk):
                     beat=beat,
                     rhyme_word=rhyme_word,
                 )
-                model = self.tag_model_var.get().strip() or "qwen3-coder:30b"
+                model = "qwen3-coder:30b"
+                if self._tools_dialog:
+                    model = self._tools_dialog.tag_model.text().strip() or model
                 poem_line = generate_line(prompt, model=model)
                 if poem_line:
                     self._poem_lines.append(poem_line)
                     self._poem_beat_index += 1
                     if len(self._poem_lines) > 200:
                         self._poem_lines = self._poem_lines[-200:]
-                    from datetime import datetime
                     ts = datetime.now().strftime("%H:%M")
-                    self.after(0, self._append_poem_line, ts, poem_line)
+                    self.log_queue.put(("poem", f"line: {poem_line[:60]}"))
+                    self._poem_line_signal.emit(ts, poem_line)
+                else:
+                    self.log_queue.put(("poem", "generate_line returned empty"))
             except Exception as e:
                 self.log_queue.put(("poem", f"error: {e}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _append_poem_line(self, timestamp: str, line: str):
-        self.poem_text.configure(state="normal")
-        prefix = f"{timestamp}  "
-        self.poem_text.insert("end", f"{prefix}{line}\n")
-        # Trim to 200 lines
-        line_count = int(self.poem_text.index("end-1c").split(".")[0])
-        if line_count > 200:
-            self.poem_text.delete("1.0", f"{line_count - 200}.0")
-        self.poem_text.see("end")
-        self.poem_text.configure(state="disabled")
-
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
-    def _on_close(self):
+    def closeEvent(self, event):
         self._poem_running = False
         try:
             if self._midi_port:
                 self._midi_port.close()
         except Exception:
             pass
-        try:
-            self._stop_engine()
-        except Exception:
-            pass
-        for proc in self._async_procs.values():
+        # Kill engine process forcefully
+        if self.engine_proc and self.engine_proc.poll() is None:
             try:
-                proc.terminate()
+                self.engine_proc.stdin.write("q\n")
+                self.engine_proc.stdin.flush()
             except Exception:
                 pass
-        self.destroy()
+            try:
+                self.engine_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.engine_proc.kill()
+                try:
+                    self.engine_proc.wait(timeout=2)
+                except Exception:
+                    pass
+        # Kill any async child processes
+        for proc in self._async_procs.values():
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        event.accept()
 
+
+# ================================================================
+# Entry Point
+# ================================================================
 
 if __name__ == "__main__":
-    app = UnifiedGUI()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyleSheet(GLOBAL_SS)
+    win = BecomingWindow()
+    win.show()
+    sys.exit(app.exec())
