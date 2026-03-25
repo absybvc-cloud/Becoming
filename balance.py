@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from src.ingestion.database import Database
 from src.ingestion.enums import TagType
 from src.engine.vectors import CLUSTER_DEFS, _assign_cluster, _GENERIC_TAGS
+from balance_shapes import compute_target_shape, shape_score, shape_divergence, name_shape
 
 DB_PATH = os.path.join("library", "becoming.db")
 
@@ -134,9 +135,12 @@ def get_cluster_distribution(db: Database) -> dict[str, list[dict]]:
     return clusters
 
 
-def analyze_balance(db: Database) -> dict:
+def analyze_balance(db: Database, target_shape: dict[str, float] | None = None) -> dict:
     """
     Analyze library balance and return a report dict.
+
+    If target_shape is provided, compute shape_score (how close to the
+    desired distribution shape) alongside classic entropy score.
 
     Returns:
         {
@@ -144,7 +148,10 @@ def analyze_balance(db: Database) -> dict:
             "clusters": {name: {"count": int, "pct": float, "deficit": int}},
             "entropy": float,
             "max_entropy": float,
-            "balance_score": float,   # 0-1, 1 = perfectly balanced
+            "balance_score": float,   # shape_score if shape provided, else entropy ratio
+            "entropy_score": float,   # always the classic entropy ratio
+            "shape_name": str,        # name of active shape
+            "shape_weights": dict,    # the target shape weights
             "underrepresented": [{"cluster": str, "count": int, "deficit": int}],
         }
     """
@@ -161,21 +168,30 @@ def analyze_balance(db: Database) -> dict:
             "entropy": 0.0,
             "max_entropy": 0.0,
             "balance_score": 0.0,
+            "entropy_score": 0.0,
+            "shape_name": "uniform",
+            "shape_weights": {},
             "underrepresented": [],
         }
 
-    # Ideal: equal distribution across clusters
-    ideal_per_cluster = total / n_clusters
+    # Default shape: uniform (all 1.0)
+    if target_shape is None:
+        target_shape = {name: 1.0 for name in active_clusters}
 
-    # Per-cluster stats
+    # Per-cluster stats using shape-aware targets
+    ideal_uniform = total / n_clusters
     cluster_stats = {}
+    actual_counts = {}
     for name, assets in active_clusters.items():
         count = len(assets)
+        actual_counts[name] = count
         pct = count / total * 100 if total > 0 else 0.0
-        deficit = max(0, round(ideal_per_cluster - count))
+        shape_w = target_shape.get(name, 1.0)
+        shaped_ideal = ideal_uniform * shape_w
+        deficit = max(0, round(shaped_ideal - count))
         cluster_stats[name] = {"count": count, "pct": pct, "deficit": deficit}
 
-    # Shannon entropy of distribution (higher = more diverse)
+    # Shannon entropy
     entropy = 0.0
     for name, assets in active_clusters.items():
         p = len(assets) / total if total > 0 else 0.0
@@ -183,17 +199,21 @@ def analyze_balance(db: Database) -> dict:
             entropy -= p * math.log2(p)
 
     max_entropy = math.log2(n_clusters) if n_clusters > 0 else 0.0
-    balance_score = entropy / max_entropy if max_entropy > 0 else 0.0
+    entropy_score_val = entropy / max_entropy if max_entropy > 0 else 0.0
 
-    # Find underrepresented clusters (< 60% of ideal)
-    threshold = ideal_per_cluster * 0.6
+    # Shape score: how close to the target shape
+    s_score = shape_score(actual_counts, target_shape)
+
+    # Use shape score as the primary balance score
+    balance = s_score
+
+    # Find underrepresented clusters (deficit > 5)
     underrepresented = []
     for name in sorted(cluster_stats, key=lambda n: cluster_stats[n]["count"]):
-        count = cluster_stats[name]["count"]
-        if count < threshold:
+        if cluster_stats[name]["deficit"] > 5:
             underrepresented.append({
                 "cluster": name,
-                "count": count,
+                "count": cluster_stats[name]["count"],
                 "deficit": cluster_stats[name]["deficit"],
             })
 
@@ -202,7 +222,10 @@ def analyze_balance(db: Database) -> dict:
         "clusters": cluster_stats,
         "entropy": entropy,
         "max_entropy": max_entropy,
-        "balance_score": balance_score,
+        "balance_score": balance,
+        "entropy_score": entropy_score_val,
+        "shape_name": name_shape(target_shape),
+        "shape_weights": target_shape,
         "underrepresented": underrepresented,
     }
 
@@ -213,8 +236,9 @@ def print_balance_report(report: dict):
     print(f"  LIBRARY BALANCE REPORT")
     print(f"{'='*60}")
     print(f"  Total assets: {report['total']}")
-    print(f"  Entropy:      {report['entropy']:.3f} / {report['max_entropy']:.3f}")
-    print(f"  Balance:      {report['balance_score']:.1%}")
+    print(f"  Entropy:      {report['entropy']:.3f} / {report['max_entropy']:.3f}  ({report.get('entropy_score', 0):.1%})")
+    print(f"  Shape:        {report.get('shape_name', 'uniform')}")
+    print(f"  Shape score:  {report['balance_score']:.1%}")
     print()
 
     # Sort by count descending
@@ -235,10 +259,13 @@ def print_balance_report(report: dict):
     print(f"{'='*60}\n")
 
 
-def compute_rebalance_plan(report: dict) -> list[dict]:
+def compute_rebalance_plan(report: dict, target_shape: dict[str, float] | None = None) -> list[dict]:
     """
-    Given a balance report, compute which queries to run for every
-    cluster that is below the ideal count.
+    Given a balance report, compute which queries to run.
+
+    Uses the shape-aware deficits already in the report (computed from
+    target_shape in analyze_balance). If target_shape is additionally
+    provided here, recompute targets explicitly.
 
     Returns list of {"query": str, "category": str, "cluster": str, "limit": int}
     """
@@ -249,11 +276,16 @@ def compute_rebalance_plan(report: dict) -> list[dict]:
     if n_clusters == 0:
         return plan
 
-    ideal = total / n_clusters
+    uniform_ideal = total / n_clusters
 
     for name in sorted(clusters, key=lambda n: clusters[n]["count"]):
         count = clusters[name]["count"]
-        deficit = round(ideal - count)
+        if target_shape:
+            shape_w = target_shape.get(name, 1.0)
+            target = uniform_ideal * shape_w
+            deficit = round(target - count)
+        else:
+            deficit = clusters[name].get("deficit", 0)
         if deficit <= 0:
             continue
         queries = CLUSTER_QUERIES.get(name, [])
@@ -272,7 +304,7 @@ def compute_rebalance_plan(report: dict) -> list[dict]:
 
 
 # ── Target balance score ────────────────────────────────────────────────────
-TARGET_BALANCE = 0.95          # stop when entropy ratio >= 95%
+TARGET_BALANCE = 0.98          # stop when entropy ratio >= 98%
 MAX_ROUNDS = 20                # absolute safety cap
 STALE_ROUNDS_LIMIT = 3         # stop after N consecutive 0-ingest rounds
 
@@ -305,11 +337,11 @@ def run_rebalance(auto_tag: bool = False):
         balance = report["balance_score"]
 
         _print(f"\n{'='*60}")
-        _print(f"  ROUND {round_num}/{MAX_ROUNDS}  |  balance={balance:.1%}  |  total={report['total']}")
+        _print(f"  ROUND {round_num}/{MAX_ROUNDS}  |  shape={report.get('shape_name', 'uniform')}  |  score={balance:.1%}  |  total={report['total']}")
         _print(f"{'='*60}")
 
         if balance >= TARGET_BALANCE:
-            _print(f"[rebalance] ✓ balance {balance:.1%} >= {TARGET_BALANCE:.0%} target — done!")
+            _print(f"[rebalance] ✓ shape score {balance:.1%} >= {TARGET_BALANCE:.0%} target — done!")
             break
 
         plan = compute_rebalance_plan(report)

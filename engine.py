@@ -18,6 +18,7 @@ Runtime controls (stdin):
     q            - quit
 """
 
+import json
 import os
 import sys
 import time
@@ -34,6 +35,7 @@ from src.engine.memory import EngineMemory
 from src.engine.world import WorldInterface
 from src.engine.weights import WeightEngine
 from src.engine.conductor import Conductor
+from src.engine.drift import DriftEngine
 from src.engine.roles import Role
 
 
@@ -62,6 +64,8 @@ def build_engine(
     world = WorldInterface(auto_time=True)
     world.update(tension=tension, density=density)
 
+    drift_engine = DriftEngine(tick_interval=10.0)
+
     state_machine = StateMachine(
         initial_state=initial_state,
         on_state_change=on_state_change,
@@ -84,14 +88,15 @@ def build_engine(
         weight_engine=weight_engine,
         memory=memory,
         world=world,
+        drift_engine=drift_engine,
         temperature=temperature,
         transition_log_path=transition_log,
     )
 
-    return library, memory, world, state_machine, weight_engine, playback, conductor
+    return library, memory, world, state_machine, weight_engine, playback, conductor, drift_engine
 
 
-def status_line(state_machine, conductor, memory, world, playback):
+def status_line(state_machine, conductor, memory, world, playback, drift_engine):
     """Print a status summary."""
     layers = conductor.active_layers
     role_counts = {r.value: 0 for r in Role}
@@ -120,13 +125,14 @@ def status_line(state_machine, conductor, memory, world, playback):
         f"| tension={w.tension:.1f} density={w.density:.1f} "
         f"| next_transition={ttl:.0f}s"
     )
+    print(f"[drift] {drift_engine.status_line()}")
 
     # Print active fragment details
     for fid, layer in layers.items():
         print(f"  └ {layer.role.value:>7}: {fid} ({layer.age:.0f}s/{layer.expected_duration:.0f}s)")
 
 
-def input_listener(state_machine, world, conductor, stop_event):
+def input_listener(state_machine, world, conductor, drift_engine, library, stop_event):
     """Listen for runtime control commands on stdin."""
     while not stop_event.is_set():
         try:
@@ -153,6 +159,7 @@ def input_listener(state_machine, world, conductor, stop_event):
             try:
                 val = float(parts[1])
                 world.update(tension=max(0.0, min(1.0, val)))
+                drift_engine.update_world(tension=val)
                 print(f"[engine] tension set to {val:.2f}")
             except ValueError:
                 print("[engine] usage: t <0-1>")
@@ -167,15 +174,52 @@ def input_listener(state_machine, world, conductor, stop_event):
             try:
                 val = float(parts[1])
                 world.update(density=max(0.0, min(1.0, val)))
+                drift_engine.update_world(density=val)
                 print(f"[engine] density set to {val:.2f}")
             except ValueError:
                 print("[engine] usage: d <0-1>")
+        elif cmd.lower() == "p" and len(parts) > 1:
+            try:
+                drift_engine.force_phase(parts[1])
+                print(f"[engine] drift phase forced to {parts[1]}")
+            except ValueError as e:
+                print(f"[engine] {e}")
         elif cmd.lower() == "m":
             conductor.mutate_replace()
         elif cmd == "!":
             conductor.mutate_silence()
+        elif cmd == "D":
+            snap = drift_engine.snapshot()
+            print(f"[drift-snapshot] {json.dumps(snap)}")
+        elif cmd.lower() == "dur" and len(parts) > 1:
+            try:
+                val = float(parts[1])
+                drift_engine.set_duration_scale(val)
+                print(f"[engine] drift duration scale set to {val:.2f}")
+            except ValueError:
+                print("[engine] usage: dur <0.1-3.0>")
+        elif cmd.lower() == "poem":
+            from poem_maker import FILTER_TAGS
+            layers = conductor.active_layers
+            words = set()
+            for fid, layer in layers.items():
+                words.update(t.lower() for t in layer.fragment.tags)
+                words.add(layer.role.value)
+                cluster = library.get_cluster(fid)
+                if cluster:
+                    words.add(cluster.replace("_", " "))
+            words -= FILTER_TAGS
+            w = world.get()
+            blob = {
+                "words": sorted(words),
+                "state": state_machine.current,
+                "phase": drift_engine.snapshot().get("phase", "drift"),
+                "tension": round(w.tension, 2),
+                "density": round(w.density, 2),
+            }
+            print(f"[poem-words] {json.dumps(blob)}")
         else:
-            print("[engine] commands: s <state> | t <0-1> | d <0-1> | T <0-1> | m (mutate) | ! (silence) | q (quit)")
+            print("[engine] commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | D (drift) | dur <0.1-3> | poem | m | ! | q")
 
 
 def main():
@@ -194,7 +238,7 @@ def main():
     print("╚══════════════════════════════════════════╝")
     print()
 
-    library, memory, world, state_machine, weight_engine, playback, conductor = build_engine(
+    library, memory, world, state_machine, weight_engine, playback, conductor, drift_engine = build_engine(
         initial_state=args.state,
         tension=args.tension,
         density=args.density,
@@ -207,6 +251,7 @@ def main():
         print("\n[engine] shutting down...")
         stop_event.set()
         conductor.stop()
+        drift_engine.stop()
         state_machine.stop()
         playback.stop()
         sys.exit(0)
@@ -217,25 +262,26 @@ def main():
     # Start all subsystems
     playback.start()
     state_machine.start()
+    drift_engine.start()
     conductor.start()
 
     # Start input listener in background
     input_thread = threading.Thread(
         target=input_listener,
-        args=(state_machine, world, conductor, stop_event),
+        args=(state_machine, world, conductor, drift_engine, library, stop_event),
         daemon=True,
     )
     input_thread.start()
 
     print()
-    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | T <0-1> (temperature) | m | ! | q")
+    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | poem | m | ! | q")
     print()
 
     # Status loop
     while not stop_event.is_set():
         time.sleep(8)
         if not stop_event.is_set():
-            status_line(state_machine, conductor, memory, world, playback)
+            status_line(state_machine, conductor, memory, world, playback, drift_engine)
 
 
 if __name__ == "__main__":

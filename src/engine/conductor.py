@@ -26,7 +26,8 @@ from .world import WorldInterface
 from .library import SoundLibrary
 from .context import ContextWindow
 from .transitions import TransitionEngine, TransitionType
-from .vectors import SemanticVector, build_semantic_vector
+from .vectors import SemanticVector, build_semantic_vector, assign_cluster
+from .drift import DriftEngine
 from ..playback_engine import PlaybackEngine
 
 
@@ -84,6 +85,7 @@ class Conductor:
         weight_engine: WeightEngine,
         memory: EngineMemory,
         world: WorldInterface,
+        drift_engine: DriftEngine | None = None,
         tick_interval: float = 2.0,
         temperature: float = 0.5,
         transition_log_path: str | None = None,
@@ -94,6 +96,7 @@ class Conductor:
         self.weights = weight_engine
         self.memory = memory
         self.world = world
+        self.drift = drift_engine
         self.tick_interval = tick_interval
 
         self._layers: dict[str, ActiveLayer] = {}
@@ -107,6 +110,7 @@ class Conductor:
             memory=memory,
             temperature=temperature,
             log_path=transition_log_path,
+            drift_engine=drift_engine,
         )
 
     def start(self):
@@ -220,6 +224,11 @@ class Conductor:
         # Update context window
         svec = self.library.get_vector(fragment.id) or build_semantic_vector(fragment)
         self.context.push(fragment, svec)
+
+        # Register cluster usage with drift engine
+        if self.drift:
+            cluster = self.library.get_cluster(fragment.id) or assign_cluster(fragment)
+            self.drift.register_cluster_usage(cluster)
 
         print(f"[conductor] spawn: {fragment.id} as {role.value} (dur={expected_dur:.0f}s, gain={gain:.2f})")
 

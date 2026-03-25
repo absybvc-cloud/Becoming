@@ -5,3 +5,5 @@ soundfile
 pydantic
 requests
 python-dotenv
+mido
+python-rtmidi

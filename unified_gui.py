@@ -14,6 +14,7 @@ This is a light orchestration UI around existing scripts/modules.
 from __future__ import annotations
 
 import queue
+import random
 import subprocess
 import threading
 import tkinter as tk
@@ -22,6 +23,12 @@ from tkinter import messagebox, ttk
 
 import sys
 import os
+
+try:
+    import mido
+    HAS_MIDI = True
+except ImportError:
+    HAS_MIDI = False
 
 # Ensure project root imports work no matter where this is launched from.
 ROOT = Path(__file__).resolve().parent
@@ -41,12 +48,17 @@ class UnifiedGUI(tk.Tk):
         self.engine_proc: subprocess.Popen | None = None
         self.engine_reader_thread: threading.Thread | None = None
         self.worker_threads: list[threading.Thread] = []
+        self._async_procs: dict[str, subprocess.Popen] = {}
 
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+
+        self._midi_port = None
+        self._midi_thread: threading.Thread | None = None
 
         self._build_style()
         self._build_ui()
         self.after(100, self._drain_log_queue)
+        self._start_midi_listener()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
@@ -173,6 +185,76 @@ class UnifiedGUI(tk.Tk):
         ttk.Combobox(run_inner, textvariable=self.force_state_var, values=STATE_NAMES, state="readonly", width=13).grid(row=1, column=3, padx=4)
         ttk.Button(run_inner, text="Apply", command=lambda: self._send_engine_cmd(f"s {self.force_state_var.get()}\n")).grid(row=1, column=4, padx=4)
 
+        # ── Drift Engine card ──────────────────────────────────────────
+        drift_card = ttk.Frame(frame, style="Panel.TFrame")
+        drift_card.pack(fill="x", pady=(10, 0))
+
+        drift_inner = ttk.Frame(drift_card)
+        drift_inner.pack(fill="x", padx=12, pady=12)
+
+        ttk.Label(drift_inner, text="Drift Engine", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
+
+        self.drift_status_text = tk.Text(
+            drift_inner, height=6, wrap="word",
+            bg="#020617", fg="#e2e8f0", font=("Menlo", 10),
+        )
+        self.drift_status_text.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(0, 8))
+        self.drift_status_text.configure(state="disabled")
+
+        drift_btn_row = ttk.Frame(drift_inner)
+        drift_btn_row.grid(row=2, column=0, columnspan=8, sticky="w")
+
+        ttk.Button(drift_btn_row, text="Enter Drift", command=lambda: self._send_engine_cmd("p drift")).pack(side="left", padx=(0, 6))
+        ttk.Button(drift_btn_row, text="Force Collapse", command=lambda: self._send_engine_cmd("p collapse")).pack(side="left", padx=(0, 6))
+        ttk.Button(drift_btn_row, text="Stabilize", command=lambda: self._send_engine_cmd("p stabilize")).pack(side="left", padx=(0, 6))
+        ttk.Button(drift_btn_row, text="Refresh", command=self._refresh_drift_status).pack(side="left", padx=(0, 6))
+
+        # ── Phase duration scale slider ────────────────────────────────
+        dur_row = ttk.Frame(drift_inner)
+        dur_row.grid(row=3, column=0, columnspan=8, sticky="ew", pady=(10, 0))
+
+        ttk.Label(dur_row, text="Phase Duration Scale").pack(side="left", padx=(0, 8))
+        self.drift_dur_scale_var = tk.DoubleVar(value=1.0)
+        ttk.Scale(dur_row, from_=0.1, to=3.0, variable=self.drift_dur_scale_var, orient="horizontal", length=200,
+                  command=lambda _: self._auto_apply_slider("dur", self.drift_dur_scale_var)).pack(side="left", padx=(0, 8))
+        self.drift_dur_scale_label = ttk.Label(dur_row, text="1.0x")
+        self.drift_dur_scale_label.pack(side="left")
+
+        def _update_dur_label(*_):
+            v = self.drift_dur_scale_var.get()
+            self.drift_dur_scale_label.config(text=f"{v:.1f}x")
+        self.drift_dur_scale_var.trace_add("write", _update_dur_label)
+
+        # ── Poem Making card ───────────────────────────────────────────
+        poem_card = ttk.Frame(frame, style="Panel.TFrame")
+        poem_card.pack(fill="x", pady=(10, 0))
+
+        poem_inner = ttk.Frame(poem_card)
+        poem_inner.pack(fill="x", padx=12, pady=12)
+
+        ttk.Label(poem_inner, text="Poem Making", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 8))
+
+        self.poem_text = tk.Text(
+            poem_inner, height=8, wrap="word",
+            bg="#020617", fg="#a5b4fc", font=("Georgia", 12, "italic"),
+        )
+        self.poem_text.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(0, 8))
+        self.poem_text.configure(state="disabled")
+
+        poem_btn_row = ttk.Frame(poem_inner)
+        poem_btn_row.grid(row=2, column=0, columnspan=8, sticky="w")
+
+        self._poem_running = False
+        self._poem_thread: threading.Thread | None = None
+        self._poem_lines: list[str] = []
+        self._poem_beat_index = 0  # alternates ascending/descending
+
+        self.poem_start_btn = ttk.Button(poem_btn_row, text="Start Poem", style="Accent.TButton", command=self._toggle_poem)
+        self.poem_start_btn.pack(side="left", padx=(0, 8))
+
+        ttk.Label(poem_btn_row, text="Interval (s)").pack(side="left", padx=(0, 4))
+        self.poem_interval_var = tk.IntVar(value=15)
+        ttk.Spinbox(poem_btn_row, from_=5, to=60, textvariable=self.poem_interval_var, width=4).pack(side="left", padx=(0, 8))
 
 
     def _build_ingest_tab(self):
@@ -291,11 +373,13 @@ class UnifiedGUI(tk.Tk):
         bal_row.grid(row=2, column=0, columnspan=6, sticky="w")
 
         ttk.Button(bal_row, text="Analyze Balance", command=self._analyze_balance).pack(side="left", padx=(0, 8))
+        ttk.Button(bal_row, text="Break Balance", command=self._break_balance).pack(side="left", padx=(0, 8))
 
         self.rebalance_auto_tag_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(bal_row, text="Auto-tag", variable=self.rebalance_auto_tag_var).pack(side="left", padx=(0, 8))
 
-        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left")
+        ttk.Button(bal_row, text="Rebalance Library", style="Accent.TButton", command=self._run_rebalance).pack(side="left", padx=(0, 8))
+        ttk.Button(bal_row, text="Stop", command=self._stop_rebalance).pack(side="left")
 
         self._refresh_library()
 
@@ -457,16 +541,19 @@ class UnifiedGUI(tk.Tk):
                     text=True,
                     bufsize=1,
                 )
+                self._async_procs[label] = proc
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     self.log_queue.put((label, line.rstrip("\n")))
                 code = proc.wait()
+                self._async_procs.pop(label, None)
                 self.log_queue.put((label, f"[done exit={code}]") )
                 if label == "harvest" and code == 0:
                     self.log_queue.put(("status", "Harvest complete"))
                 elif label == "auto_tag" and code == 0:
                     self.log_queue.put(("status", "Auto-tag complete"))
             except Exception as e:
+                self._async_procs.pop(label, None)
                 self.log_queue.put((label, f"ERROR: {e}"))
 
         t = threading.Thread(target=worker, daemon=True)
@@ -514,6 +601,13 @@ class UnifiedGUI(tk.Tk):
                 if source == "status":
                     self.status_var.set(line)
                     continue
+                # Intercept drift-snapshot JSON and display in drift panel
+                if "[drift-snapshot]" in line:
+                    self._handle_drift_snapshot(line)
+                # Intercept poem-words JSON for poem generation
+                if "[poem-words]" in line:
+                    self._handle_poem_words(line)
+                    continue  # don't clutter the log
                 self._append_log_line(source, line)
         except queue.Empty:
             pass
@@ -529,18 +623,34 @@ class UnifiedGUI(tk.Tk):
     # Balance / Rebalance
     # ------------------------------------------------------------------
 
-    def _analyze_balance(self):
-        """Run balance analysis and display in the text widget."""
+    def _break_balance(self):
+        """Pick a random non-uniform shape and re-analyze balance against it."""
         def worker():
             try:
                 from balance import analyze_balance, get_db
+                from balance_shapes import (
+                    _convergent, _bipolar, _cascade, _hollow, _surge, _drought, _normalize,
+                )
+                from src.engine.vectors import CLUSTER_DEFS
+
+                clusters = sorted(CLUSTER_DEFS.keys())
+                shape_makers = [
+                    lambda c=clusters: _convergent(c, random.choice(c)),
+                    lambda c=clusters: _bipolar(c, *random.sample(c, 2)),
+                    lambda c=clusters: _cascade(c, random.sample(c, len(c))),
+                    lambda c=clusters: _hollow(c, random.sample(c, max(2, len(c) // 3))),
+                    lambda c=clusters: _surge(c),
+                    lambda c=clusters: _drought(c),
+                ]
+                shape = random.choice(shape_makers)()
+
                 db = get_db()
-                report = analyze_balance(db)
+                report = analyze_balance(db, target_shape=shape)
 
                 lines = []
                 lines.append(f"Total assets: {report['total']}")
-                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}")
-                lines.append(f"Balance score: {report['balance_score']:.1%}")
+                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}  ({report.get('entropy_score', 0):.1%})")
+                lines.append(f"Shape: {report.get('shape_name', 'uniform')}  |  Shape score: {report['balance_score']:.1%}")
                 lines.append("")
 
                 for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
@@ -551,16 +661,54 @@ class UnifiedGUI(tk.Tk):
 
                 if report["underrepresented"]:
                     lines.append("")
-                    lines.append("⚠ Under-represented clusters:")
+                    lines.append("⚠ Under-represented (vs broken shape):")
                     for item in report["underrepresented"]:
                         lines.append(f"  {item['cluster']}: {item['count']} sounds (need +{item['deficit']})")
                 else:
                     lines.append("")
-                    lines.append("✓ All clusters are reasonably balanced")
+                    lines.append("✓ Distribution matches broken shape")
 
                 text = "\n".join(lines)
                 self.after(0, lambda: self._set_balance_text(text))
-                self.log_queue.put(("balance", f"analysis complete — balance={report['balance_score']:.1%}"))
+                self.log_queue.put(("balance", f"BREAK → shape={report.get('shape_name', 'uniform')} score={report['balance_score']:.1%}"))
+            except Exception as e:
+                self.after(0, lambda: self._set_balance_text(f"ERROR: {e}"))
+                self.log_queue.put(("balance", f"ERROR: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _analyze_balance(self):
+        """Run balance analysis and display in the text widget."""
+        def worker():
+            try:
+                from balance import analyze_balance, get_db
+                db = get_db()
+                report = analyze_balance(db)
+
+                lines = []
+                lines.append(f"Total assets: {report['total']}")
+                lines.append(f"Entropy: {report['entropy']:.3f} / {report['max_entropy']:.3f}  ({report.get('entropy_score', 0):.1%})")
+                lines.append(f"Shape: {report.get('shape_name', 'uniform')}  |  Shape score: {report['balance_score']:.1%}")
+                lines.append("")
+
+                for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
+                    s = report["clusters"][name]
+                    bar = "█" * int(s["pct"] / 2)
+                    deficit_str = f"  (need +{s['deficit']})" if s["deficit"] > 0 else ""
+                    lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit_str}")
+
+                if report["underrepresented"]:
+                    lines.append("")
+                    lines.append("⚠ Under-represented (vs current shape):")
+                    for item in report["underrepresented"]:
+                        lines.append(f"  {item['cluster']}: {item['count']} sounds (need +{item['deficit']})")
+                else:
+                    lines.append("")
+                    lines.append("✓ Distribution matches current shape")
+
+                text = "\n".join(lines)
+                self.after(0, lambda: self._set_balance_text(text))
+                self.log_queue.put(("balance", f"shape={report.get('shape_name', 'uniform')} score={report['balance_score']:.1%}"))
             except Exception as e:
                 self.after(0, lambda: self._set_balance_text(f"ERROR: {e}"))
                 self.log_queue.put(("balance", f"ERROR: {e}"))
@@ -574,6 +722,9 @@ class UnifiedGUI(tk.Tk):
         self.balance_text.configure(state="disabled")
 
     def _run_rebalance(self):
+        if "rebalance" in self._async_procs:
+            self._log("rebalance", "already running")
+            return
         cmd = [
             str(ROOT / ".venv" / "bin" / "python"), "-u",
             str(ROOT / "balance.py"),
@@ -583,15 +734,247 @@ class UnifiedGUI(tk.Tk):
             cmd.append("--auto-tag")
         self._run_cmd_async("rebalance", cmd)
 
+    def _stop_rebalance(self):
+        proc = self._async_procs.get("rebalance")
+        if proc and proc.poll() is None:
+            proc.terminate()
+            self._log("rebalance", "stopped by user")
+        else:
+            self._log("rebalance", "not running")
+
+    # ------------------------------------------------------------------
+    # Drift Engine
+    # ------------------------------------------------------------------
+
+    def _refresh_drift_status(self):
+        """Request drift snapshot from the running engine."""
+        self._send_engine_cmd("D")
+
+    def _handle_drift_snapshot(self, line: str):
+        """Parse [drift-snapshot] JSON and update the drift panel."""
+        import json
+        try:
+            idx = line.index("[drift-snapshot]")
+            raw = line[idx + len("[drift-snapshot]"):].strip()
+            snap = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            return
+
+        lines = []
+        lines.append(f"Phase: {snap.get('phase', '?')}  |  Focus: {snap.get('focus') or 'none'}  |  Next phase in: {snap.get('phase_remaining', 0):.0f}s  |  Scale: {snap.get('duration_scale', 1.0):.1f}x")
+        lines.append("")
+
+        desires = snap.get("desires", {})
+        fatigue = snap.get("fatigue", {})
+
+        # Color coding in text: Red = high desire, Blue = fatigued, Gold = focus
+        focus = snap.get("focus")
+        for name in sorted(desires, key=lambda n: -desires[n]):
+            d = desires[name]
+            f = fatigue.get(name, 0)
+            bar_len = int(min(d, 5.0) * 6)  # 5.0 max → 30 chars
+            bar = "█" * bar_len
+            marker = " ★" if name == focus else ""
+            lines.append(f"  {name:<20s} desire={d:5.2f}  fatigue={f:.2f}  {bar}{marker}")
+
+        self._set_drift_text("\n".join(lines))
+
+    def _set_drift_text(self, text: str):
+        self.drift_status_text.configure(state="normal")
+        self.drift_status_text.delete("1.0", "end")
+        self.drift_status_text.insert("1.0", text)
+        self.drift_status_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # MIDI
+    # ------------------------------------------------------------------
+
+    # CC number → (tk.DoubleVar attr name, engine command, min, max)
+    # SINCO SMC-Mixer: CC 40-43 = four knobs/faders, CC 52 = fifth
+    MIDI_CC_MAP: dict[int, tuple[str, str, float, float]] = {
+        40: ("tension_var", "t", 0.0, 1.0),
+        41: ("density_var", "d", 0.0, 1.0),
+        42: ("temperature_var", "T", 0.0, 1.0),
+        43: ("drift_dur_scale_var", "dur", 0.1, 3.0),
+    }
+
+    # Preferred MIDI port name (use Private to avoid duplicate messages from Master)
+    MIDI_PREFERRED_PORT = "Private"
+
+    def _start_midi_listener(self):
+        if not HAS_MIDI:
+            return
+        self._midi_thread = threading.Thread(target=self._midi_loop, daemon=True)
+        self._midi_thread.start()
+
+    def _midi_loop(self):
+        """Background thread: open the preferred MIDI input and forward CC messages."""
+        while True:
+            try:
+                names = mido.get_input_names()
+            except Exception:
+                return
+            if not names:
+                import time
+                time.sleep(5)
+                continue
+
+            # Prefer port whose name contains MIDI_PREFERRED_PORT
+            chosen = names[0]
+            for n in names:
+                if self.MIDI_PREFERRED_PORT in n:
+                    chosen = n
+                    break
+
+            try:
+                self._midi_port = mido.open_input(chosen)
+                self.log_queue.put(("midi", f"connected: {chosen}"))
+            except Exception as e:
+                self.log_queue.put(("midi", f"failed to open {names[0]}: {e}"))
+                import time
+                time.sleep(5)
+                continue
+
+            try:
+                for msg in self._midi_port:
+                    if msg.type == "control_change" and msg.control in self.MIDI_CC_MAP:
+                        var_name, cmd, lo, hi = self.MIDI_CC_MAP[msg.control]
+                        value = lo + (msg.value / 127.0) * (hi - lo)
+                        self.after(0, self._apply_midi_cc, var_name, cmd, value)
+            except Exception:
+                pass
+            finally:
+                try:
+                    if self._midi_port:
+                        self._midi_port.close()
+                except Exception:
+                    pass
+                self._midi_port = None
+            import time
+            time.sleep(2)
+
+    def _apply_midi_cc(self, var_name: str, cmd: str, value: float):
+        """Update the tkinter variable and send the engine command (runs on main thread)."""
+        var: tk.DoubleVar = getattr(self, var_name, None)
+        if var is None:
+            return
+        var.set(round(value, 3))
+        self._auto_apply_slider(cmd, var)
+
+    # ------------------------------------------------------------------
+    # Poem Making
+    # ------------------------------------------------------------------
+
+    def _toggle_poem(self):
+        if self._poem_running:
+            self._poem_running = False
+            self.poem_start_btn.config(text="Start Poem")
+            self._log("poem", "stopped")
+        else:
+            if not self.engine_proc or self.engine_proc.poll() is not None:
+                messagebox.showwarning("Poem", "Engine must be running to generate poems.")
+                return
+            self._poem_running = True
+            self.poem_start_btn.config(text="Stop Poem")
+            self._log("poem", "started")
+            self._poem_thread = threading.Thread(target=self._poem_loop, daemon=True)
+            self._poem_thread.start()
+
+    def _poem_loop(self):
+        import time as _time
+        while self._poem_running:
+            if self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
+                try:
+                    self.engine_proc.stdin.write("poem\n")
+                    self.engine_proc.stdin.flush()
+                except Exception:
+                    pass
+            interval = max(5, self.poem_interval_var.get())
+            for _ in range(interval * 10):
+                if not self._poem_running:
+                    return
+                _time.sleep(0.1)
+
+    def _handle_poem_words(self, line: str):
+        """Parse [poem-words] JSON, call Ollama in a thread, append poem line."""
+        import json as _json
+        try:
+            idx = line.index("[poem-words]")
+            raw = line[idx + len("[poem-words]"):].strip()
+            blob = _json.loads(raw)
+        except (ValueError, _json.JSONDecodeError):
+            return
+
+        def worker():
+            try:
+                from poem_maker import harvest_words, build_poem_prompt, generate_line
+                words_str = harvest_words(blob)
+                beat = "ascending" if self._poem_beat_index % 2 == 0 else "descending"
+                # AABB couplet: even index = free line, odd index = rhyme with previous
+                rhyme_word = None
+                if self._poem_beat_index % 2 == 1 and self._poem_lines:
+                    # Extract last word of previous line as rhyme target
+                    import re as _re
+                    prev = self._poem_lines[-1]
+                    words_in_prev = _re.findall(r"[a-zA-Z]+", prev)
+                    if words_in_prev:
+                        rhyme_word = words_in_prev[-1].lower()
+                prompt = build_poem_prompt(
+                    words_str,
+                    blob.get("state", "drifting"),
+                    blob.get("phase", "drift"),
+                    blob.get("tension", 0.3),
+                    blob.get("density", 0.5),
+                    previous_lines=self._poem_lines[-3:] if self._poem_lines else None,
+                    beat=beat,
+                    rhyme_word=rhyme_word,
+                )
+                model = self.tag_model_var.get().strip() or "qwen3-coder:30b"
+                poem_line = generate_line(prompt, model=model)
+                if poem_line:
+                    self._poem_lines.append(poem_line)
+                    self._poem_beat_index += 1
+                    if len(self._poem_lines) > 200:
+                        self._poem_lines = self._poem_lines[-200:]
+                    from datetime import datetime
+                    ts = datetime.now().strftime("%H:%M")
+                    self.after(0, self._append_poem_line, ts, poem_line)
+            except Exception as e:
+                self.log_queue.put(("poem", f"error: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _append_poem_line(self, timestamp: str, line: str):
+        self.poem_text.configure(state="normal")
+        prefix = f"{timestamp}  "
+        self.poem_text.insert("end", f"{prefix}{line}\n")
+        # Trim to 200 lines
+        line_count = int(self.poem_text.index("end-1c").split(".")[0])
+        if line_count > 200:
+            self.poem_text.delete("1.0", f"{line_count - 200}.0")
+        self.poem_text.see("end")
+        self.poem_text.configure(state="disabled")
+
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
     def _on_close(self):
+        self._poem_running = False
+        try:
+            if self._midi_port:
+                self._midi_port.close()
+        except Exception:
+            pass
         try:
             self._stop_engine()
         except Exception:
             pass
+        for proc in self._async_procs.values():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         self.destroy()
 
 

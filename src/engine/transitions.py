@@ -32,6 +32,10 @@ from .vectors import SemanticVector, RoleVector, assign_cluster
 from .context import ContextWindow, ContextSnapshot
 from .memory import EngineMemory
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .drift import DriftEngine
+
 
 class TransitionType(str, Enum):
     CONTINUE = "continue"
@@ -84,11 +88,13 @@ class TransitionEngine:
         memory: EngineMemory,
         temperature: float = 0.5,
         log_path: str | None = None,
+        drift_engine: DriftEngine | None = None,
     ):
         self.memory = memory
         self.temperature = max(0.0, min(1.0, temperature))
         self._bridge_usage: dict[str, int] = {}  # tag → times used as bridge
         self._log_path = log_path
+        self._drift = drift_engine
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -214,6 +220,14 @@ class TransitionEngine:
 
             # Temperature noise
             total += random.gauss(0, self.temperature * 0.3)
+
+            # Drift engine desire bias: boost clusters the drift engine wants
+            if self._drift:
+                cluster = assign_cluster(frag)
+                desire = self._drift.get_cluster_desire(cluster)
+                # desire ~1.0 is neutral; >1 boosts, <1 suppresses
+                total *= max(0.1, 0.5 + desire * 0.5)
+
             total = max(0.001, total)
 
             scored.append(CandidateScore(
