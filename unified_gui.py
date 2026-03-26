@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox,
     QTextEdit, QVBoxLayout, QWidget, QComboBox, QLineEdit,
     QCheckBox, QSizePolicy, QGraphicsOpacityEffect, QDialog,
-    QFormLayout, QGroupBox,
+    QFormLayout, QGroupBox, QGridLayout,
 )
 
 try:
@@ -231,6 +231,7 @@ class InfluencePanel(QWidget):
     interventionClicked = Signal(str)    # engine command string
     engineStartRequested = Signal()
     engineStopRequested = Signal()
+    recordToggled = Signal(bool)         # True=start, False=stop
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,11 +320,11 @@ class InfluencePanel(QWidget):
         lay.addSpacing(4)
 
         interventions = [
-            ("introduce rupture", "m", ACCENT_RED),
-            ("invite silence", "!", ACCENT_VIOLET),
-            ("enter drift", "p drift", ACCENT_VIOLET),
-            ("force collapse", "p collapse", ACCENT_AMBER),
-            ("stabilize", "p stabilize", ACCENT_CYAN),
+            ("introduce rupture", "rupture", ACCENT_RED),
+            ("invite silence", "silence", ACCENT_VIOLET),
+            ("enter drift", "drift", ACCENT_VIOLET),
+            ("force collapse", "collapse", ACCENT_AMBER),
+            ("stabilize", "stabilize", ACCENT_CYAN),
         ]
         for label, cmd, color in interventions:
             btn = PillButton(label, color)
@@ -339,13 +340,18 @@ class InfluencePanel(QWidget):
         lay.addWidget(eng_lbl)
         lay.addSpacing(4)
 
-        self.start_btn = PillButton("awaken", ACCENT_CYAN)
+        self.start_btn = PillButton("start engine", ACCENT_CYAN)
         self.start_btn.clicked.connect(self.engineStartRequested.emit)
         lay.addWidget(self.start_btn)
 
-        self.stop_btn = PillButton("silence", ACCENT_RED)
+        self.stop_btn = PillButton("stop engine", ACCENT_RED)
         self.stop_btn.clicked.connect(self.engineStopRequested.emit)
         lay.addWidget(self.stop_btn)
+
+        self.record_btn = PillButton("record", ACCENT_RED)
+        self._recording = False
+        self.record_btn.clicked.connect(self._toggle_record)
+        lay.addWidget(self.record_btn)
         lay.addSpacing(6)
 
         # -- Initial state selector --
@@ -408,6 +414,58 @@ class InfluencePanel(QWidget):
         self.library_btn = PillButton("library", FG_DIM)
         tools_row2.addWidget(self.library_btn)
         lay.addLayout(tools_row2)
+
+    _REC_IDLE_STYLE = f"""
+        QPushButton {{
+            background-color: {ACCENT_RED}22;
+            color: {ACCENT_RED};
+            border: 1px solid {ACCENT_RED}44;
+            border-radius: 15px;
+            padding: 4px 18px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: {ACCENT_RED}44;
+            border-color: {ACCENT_RED}88;
+        }}
+        QPushButton:pressed {{
+            background-color: {ACCENT_RED}66;
+        }}
+    """
+    _REC_ACTIVE_STYLE = """
+        QPushButton {
+            background-color: #cc3333;
+            color: #ffffff;
+            border: 1px solid #cc3333;
+            border-radius: 15px;
+            padding: 4px 18px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        QPushButton:hover { background-color: #dd4444; }
+        QPushButton:pressed { background-color: #bb2222; }
+    """
+
+    def _toggle_record(self):
+        self._recording = not self._recording
+        if self._recording:
+            self.record_btn.setText("stop recording")
+            self.record_btn.setStyleSheet(self._REC_ACTIVE_STYLE)
+        else:
+            self.record_btn.setText("record")
+            self.record_btn.setStyleSheet(self._REC_IDLE_STYLE)
+        self.recordToggled.emit(self._recording)
+
+    def set_record_state(self, active: bool):
+        """Externally set record button state (e.g. engine stopped)."""
+        self._recording = active
+        if active:
+            self.record_btn.setText("stop recording")
+            self.record_btn.setStyleSheet(self._REC_ACTIVE_STYLE)
+        else:
+            self.record_btn.setText("record")
+            self.record_btn.setStyleSheet(self._REC_IDLE_STYLE)
 
 
 # ================================================================
@@ -859,28 +917,119 @@ class WhisperBar(QWidget):
 
 
 # ================================================================
+# Cluster Bar Chart
+# ================================================================
+
+# Cluster → accent colour mapping
+_CLUSTER_COLORS = {
+    "dark_drift":        "#6366f1",
+    "tonal_meditative":  "#8b5cf6",
+    "nature_field":      "#22c55e",
+    "urban_field":       "#f59e0b",
+    "industrial_noise":  "#ef4444",
+    "texture_evolving":  "#0ea5e9",
+    "pulse_rhythm":      "#ec4899",
+    "rupture_event":     "#f97316",
+    "ambient_float":     "#06b6d4",
+}
+
+class ClusterBarChart(QWidget):
+    """Horizontal bar chart showing cluster distribution."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: dict[str, dict] = {}   # cluster → {count, pct, deficit}
+        self._total = 0
+        self._entropy_text = ""
+        self.setMinimumHeight(180)
+
+    def set_data(self, report: dict):
+        self._data = report.get("clusters", {})
+        self._total = report.get("total", 0)
+        ent = report.get("entropy", 0)
+        maxe = report.get("max_entropy", 1)
+        score = report.get("balance_score", 0)
+        shape = report.get("shape_name", "uniform")
+        self._entropy_text = (
+            f"{self._total} sounds  ·  entropy {ent:.2f}/{maxe:.2f}  ·  "
+            f"score {score:.0%}  ·  shape: {shape}"
+        )
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._data:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Header
+        p.setPen(QColor(FG_DIM))
+        p.setFont(QFont("Menlo", 10))
+        p.drawText(8, 14, self._entropy_text)
+
+        top = 24
+        bar_h = max(12, min(20, (h - top - 8) // max(len(self._data), 1) - 4))
+        max_count = max((c["count"] for c in self._data.values()), default=1) or 1
+        label_w = 140
+        count_w = 50
+        bar_area = w - label_w - count_w - 20
+
+        sorted_names = sorted(self._data, key=lambda n: -self._data[n]["count"])
+        for i, name in enumerate(sorted_names):
+            y = top + i * (bar_h + 4)
+            info = self._data[name]
+            # Label
+            p.setPen(QColor(FG_DIM))
+            p.setFont(QFont("Menlo", 9))
+            p.drawText(4, y + bar_h - 2, name)
+            # Bar
+            bw = max(2, int(bar_area * info["count"] / max_count))
+            color = QColor(_CLUSTER_COLORS.get(name, ACCENT_CYAN))
+            p.setBrush(QBrush(color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(label_w, y, bw, bar_h, 3, 3)
+            # Count + deficit
+            p.setPen(QColor(FG_DIM))
+            deficit = f" +{info['deficit']}" if info.get("deficit", 0) > 0 else ""
+            p.drawText(label_w + bw + 4, y + bar_h - 2,
+                       f"{info['count']}  ({info['pct']:.0f}%){deficit}")
+        p.end()
+
+
+# ================================================================
 # Tools Dialog (secondary panel for ingest/tag/library)
 # ================================================================
 
 class ToolsDialog(QDialog):
     """Modal dialog grouping Harvest, Auto-tag, Library, Balance tools."""
 
+    _balance_ready = Signal(object)   # emitted from worker thread, consumed on main
+    _balance_error = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("tools")
-        self.setMinimumSize(720, 520)
+        self.setMinimumSize(960, 700)
         self.setStyleSheet(f"background-color: {BG_DEEP}; color: {FG_PRIMARY}; border: 1px solid {BG_SURFACE};")
         self._parent = parent
+        self._balance_ready.connect(self._on_balance_ready)
+        self._balance_error.connect(lambda msg: self.append_task_log("balance", msg))
         self._build()
 
     def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(16)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(0)
 
-        # -- Harvest --
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        _gs = f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}"
+
+        # ── Top-Left: Harvest ──
         hg = QGroupBox("harvest")
-        hg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        hg.setStyleSheet(_gs)
         hlay = QFormLayout(hg)
         self.ingest_limit = QSpinBox(); self.ingest_limit.setRange(1, 200); self.ingest_limit.setValue(3)
         self.ingest_query = QLineEdit()
@@ -898,11 +1047,11 @@ class ToolsDialog(QDialog):
         harvest_btn = PillButton("run harvest", ACCENT_CYAN)
         harvest_btn.clicked.connect(self._run_harvest)
         hlay.addRow("", harvest_btn)
-        lay.addWidget(hg)
+        grid.addWidget(hg, 0, 0)
 
-        # -- Auto Tag --
+        # ── Top-Right: Auto Tag ──
         tg = QGroupBox("auto tag")
-        tg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        tg.setStyleSheet(_gs)
         tlay = QFormLayout(tg)
         self.tag_model = QLineEdit("qwen3-coder:30b")
         self.tag_limit = QSpinBox(); self.tag_limit.setRange(0, 10000); self.tag_limit.setValue(20)
@@ -918,11 +1067,11 @@ class ToolsDialog(QDialog):
         tag_btn = PillButton("run auto tag", ACCENT_VIOLET)
         tag_btn.clicked.connect(self._run_auto_tag)
         tlay.addRow("", tag_btn)
-        lay.addWidget(tg)
+        grid.addWidget(tg, 0, 1)
 
-        # -- Library --
-        lg = QGroupBox("library")
-        lg.setStyleSheet(f"QGroupBox {{ color: {FG_DIM}; border: 1px solid {BG_SURFACE}; border-radius: 8px; padding-top: 16px; }}")
+        # ── Bottom-Left: Library & Balance + Chart ──
+        lg = QGroupBox("library & balance")
+        lg.setStyleSheet(_gs)
         llib = QVBoxLayout(lg)
         self.lib_summary_lbl = QLabel("not loaded")
         self.lib_summary_lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 13px;")
@@ -936,8 +1085,6 @@ class ToolsDialog(QDialog):
         lib_row.addWidget(review_btn)
         lib_row.addStretch()
         llib.addLayout(lib_row)
-
-        # Balance
         bal_row = QHBoxLayout()
         analyze_btn = PillButton("analyze balance", ACCENT_CYAN)
         analyze_btn.clicked.connect(self._analyze_balance)
@@ -955,14 +1102,50 @@ class ToolsDialog(QDialog):
         bal_row.addWidget(stop_btn)
         bal_row.addStretch()
         llib.addLayout(bal_row)
+        self.cluster_chart = ClusterBarChart()
+        llib.addWidget(self.cluster_chart, stretch=1)
+        grid.addWidget(lg, 1, 0)
 
-        self.balance_text = QTextEdit()
-        self.balance_text.setReadOnly(True)
-        self.balance_text.setMaximumHeight(160)
-        llib.addWidget(self.balance_text)
-        lay.addWidget(lg)
+        # ── Bottom-Right: Task Log ──
+        log_group = QGroupBox("task log")
+        log_group.setStyleSheet(_gs)
+        log_lay = QVBoxLayout(log_group)
+        self.task_log = QTextEdit()
+        self.task_log.setReadOnly(True)
+        self.task_log.setStyleSheet(f"""
+            QTextEdit {{
+                background: {BG_DEEP};
+                color: {FG_WHISPER};
+                font-family: 'Menlo', 'Courier New', monospace;
+                font-size: 10px;
+                border: 1px solid {BG_SURFACE};
+                border-radius: 4px;
+            }}
+        """)
+        log_lay.addWidget(self.task_log, stretch=1)
+        clear_btn = PillButton("clear log", FG_DIM)
+        clear_btn.clicked.connect(lambda: self.task_log.clear())
+        log_lay.addWidget(clear_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(log_group, 1, 1)
+
+        # Equal row/column stretch
+        grid.setRowStretch(0, 0)
+        grid.setRowStretch(1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        outer.addLayout(grid)
 
         self._refresh_library()
+
+    def append_task_log(self, source: str, line: str):
+        """Append a line to the task log panel."""
+        self.task_log.append(f"[{source}] {line}")
+        doc = self.task_log.document()
+        if doc.blockCount() > 1000:
+            cursor = self.task_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor, doc.blockCount() - 800)
+            cursor.removeSelectedText()
 
     # -- Delegate actions to parent (BecomingWindow) --
     def _run_harvest(self):
@@ -999,9 +1182,12 @@ class ToolsDialog(QDialog):
             summary = lib.summary()
             total = sum(summary.values())
             parts = " | ".join(f"{k}={v}" for k, v in sorted(summary.items()))
-            self.lib_summary_lbl.setText(f"{total} sounds  :  {parts}")
+            text = f"{total} sounds  :  {parts}"
+            self.lib_summary_lbl.setText(text)
+            self.append_task_log("library", text)
         except Exception as e:
             self.lib_summary_lbl.setText(f"error: {e}")
+            self.append_task_log("library", f"error: {e}")
 
     def _open_review_tool(self):
         if self._parent:
@@ -1014,10 +1200,9 @@ class ToolsDialog(QDialog):
                 from balance import analyze_balance, get_db
                 db = get_db()
                 report = analyze_balance(db)
-                text = self._format_balance(report)
-                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(text))
+                self._balance_ready.emit(report)
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(f"ERROR: {e}"))
+                self._balance_error.emit(f"ERROR: {e}")
         threading.Thread(target=worker, daemon=True).start()
 
     def _break_balance(self):
@@ -1040,23 +1225,29 @@ class ToolsDialog(QDialog):
                 shape = random.choice(shape_makers)()
                 db = get_db()
                 report = analyze_balance(db, target_shape=shape)
-                text = self._format_balance(report)
-                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(text))
+                self._balance_ready.emit(report)
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.balance_text.setPlainText(f"ERROR: {e}"))
+                self._balance_error.emit(f"ERROR: {e}")
         threading.Thread(target=worker, daemon=True).start()
 
-    def _format_balance(self, report: dict) -> str:
-        lines = []
-        lines.append(f"Total: {report['total']}  Entropy: {report['entropy']:.3f}/{report['max_entropy']:.3f} ({report.get('entropy_score',0):.1%})")
-        lines.append(f"Shape: {report.get('shape_name','uniform')}  Score: {report['balance_score']:.1%}")
-        lines.append("")
-        for name in sorted(report["clusters"], key=lambda n: -report["clusters"][n]["count"]):
-            s = report["clusters"][name]
-            bar = "=" * int(s["pct"] / 2)
-            deficit = f" (+{s['deficit']})" if s["deficit"] > 0 else ""
-            lines.append(f"  {name:<20s} {s['count']:>4d}  {s['pct']:5.1f}%  {bar}{deficit}")
-        return "\n".join(lines)
+    @Slot(dict)
+    def _on_balance_ready(self, report: dict):
+        """Handle balance report on the main thread."""
+        try:
+            self.cluster_chart.set_data(report)
+        except Exception as e:
+            self.append_task_log("balance", f"chart error: {e}")
+        total = report.get('total', 0)
+        score = report.get('balance_score', 0)
+        shape = report.get('shape_name', 'uniform')
+        self.append_task_log("balance",
+            f"{total} sounds  score {score:.0%}  shape: {shape}")
+        for name in sorted(report.get('clusters', {}),
+                           key=lambda n: -report['clusters'][n]['count']):
+            c = report['clusters'][name]
+            deficit = f"  (+{c['deficit']})" if c.get('deficit', 0) > 0 else ""
+            self.append_task_log("balance",
+                f"  {name}: {c['count']}  {c['pct']:.1f}%{deficit}")
 
     def _run_rebalance(self):
         if not self._parent:
@@ -1161,6 +1352,7 @@ class BecomingWindow(QMainWindow):
         self._influence.library_btn.clicked.connect(self._open_library)
         self._influence.rebalance_btn.clicked.connect(self._run_rebalance_quick)
         self._influence.break_bal_btn.clicked.connect(self._break_balance_quick)
+        self._influence.recordToggled.connect(self._on_record_toggled)
 
     def keyPressEvent(self, event):
         # Ctrl+D or backtick toggles debug log
@@ -1301,6 +1493,12 @@ class BecomingWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_record_toggled(self, start: bool):
+        if start:
+            self._send_engine_cmd("rec")
+        else:
+            self._send_engine_cmd("rec_stop")
+
     def _stop_engine(self):
         if not self.engine_proc or self.engine_proc.poll() is not None:
             self._whisper.set_status("engine stopped")
@@ -1317,6 +1515,7 @@ class BecomingWindow(QMainWindow):
             self.engine_proc.terminate()
         self._whisper.set_status("engine stopped")
         self._log("engine", "stop requested")
+        self._influence.set_record_state(False)
 
     # ------------------------------------------------------------------
     # Async command runner
@@ -1350,6 +1549,8 @@ class BecomingWindow(QMainWindow):
     def _log(self, source: str, line: str):
         self.log_queue.put((source, line))
 
+    _TASK_SOURCES = {"harvest", "auto_tag", "rebalance", "balance", "library", "recording"}
+
     def _drain_log_queue(self):
         try:
             for _ in range(50):  # process up to 50 per tick
@@ -1361,7 +1562,16 @@ class BecomingWindow(QMainWindow):
                     self._handle_drift_snapshot(line)
                 if "[poem-words]" in line:
                     self._handle_poem_words(line)
+                if "[recording]" in line:
+                    if self._tools_dialog:
+                        self._tools_dialog.append_task_log("recording", line)
+                    if "[recording] saved" in line:
+                        self._whisper.set_status("recording saved")
+                        self._influence.set_record_state(False)
                 self._whisper.append_log(source, line)
+                # Forward task output to ToolsDialog log
+                if source in self._TASK_SOURCES and self._tools_dialog:
+                    self._tools_dialog.append_task_log(source, line)
         except queue.Empty:
             pass
 

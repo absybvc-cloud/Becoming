@@ -3,6 +3,8 @@ import time
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+from pathlib import Path
+from datetime import datetime
 
 from .audio_library import Fragment
 
@@ -67,6 +69,10 @@ class PlaybackEngine:
         self.lock = threading.Lock()
         self.playing: dict[str, PlayingFragment] = {}
         self.stream = None
+        # Recording state
+        self._recording = False
+        self._rec_buffers: list[np.ndarray] = []
+        self._rec_lock = threading.Lock()
 
     def start(self):
         self.stream = sd.OutputStream(
@@ -97,6 +103,10 @@ class PlaybackEngine:
                 del self.playing[fid]
         np.clip(mixed, -1.0, 1.0, out=mixed)
         outdata[:] = mixed
+        # Capture for recording
+        if self._recording:
+            with self._rec_lock:
+                self._rec_buffers.append(mixed.copy())
 
     def _load_audio(self, fragment: Fragment) -> np.ndarray:
         data, sr = sf.read(fragment.file_path, dtype="float32", always_2d=True)
@@ -133,6 +143,13 @@ class PlaybackEngine:
                 pf.active = False
         print(f"[playback] stopping {fragment_id} (crossfade={crossfade})")
 
+    def set_gain(self, fragment_id: str, gain: float):
+        """Update gain for a playing fragment (used by layer fade system)."""
+        with self.lock:
+            pf = self.playing.get(fragment_id)
+            if pf:
+                pf.gain = gain
+
     def crossfade(self, fragment_out: str, fragment_in: Fragment, gain: float = 1.0):
         self.stop_fragment(fragment_out, crossfade=True)
         self.play(fragment_in, gain=gain)
@@ -144,3 +161,29 @@ class PlaybackEngine:
     def is_playing(self, fragment_id: str) -> bool:
         with self.lock:
             return fragment_id in self.playing
+
+    # ── Recording ────────────────────────────────────────────────────
+
+    def start_recording(self):
+        """Begin capturing the mixed audio output."""
+        with self._rec_lock:
+            self._rec_buffers.clear()
+            self._recording = True
+        print("[playback] recording started")
+
+    def stop_recording(self) -> np.ndarray | None:
+        """Stop recording and return concatenated audio (or None if empty)."""
+        with self._rec_lock:
+            self._recording = False
+            if not self._rec_buffers:
+                return None
+            audio = np.concatenate(self._rec_buffers, axis=0)
+            self._rec_buffers.clear()
+        print(f"[playback] recording stopped ({len(audio) / SAMPLE_RATE:.1f}s)")
+        return audio
+
+    @staticmethod
+    def save_recording(audio: np.ndarray, path: str | Path):
+        """Write recorded audio to a WAV file."""
+        sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_24")
+        print(f"[playback] saved recording to {path}")

@@ -1,0 +1,6 @@
+Recording started: 2026-03-26T22:37:05.902459
+Duration: 63.6s
+Fragments spawned: 2
+
+  [00:12.52] freesound_35575_54c79a96  role=texture  tags=accident, experimental, distorted, ritual_sound, glitch, noise, mysterious, drift_material, industrial, stutter repeat mechine, circuit-bent
+  [00:20.59] freesound_78876_e453b08e  role=texture  tags=experimental, texture, mysterious, laboratory, futuristic, computer, sound-design, harsh, destroy, error, alien, noise, sci-fi, drift_material, noise-modulation, file, digital, ominous, distorted, glitch, damage, noise-channel, signal
