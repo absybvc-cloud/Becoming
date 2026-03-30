@@ -352,6 +352,46 @@ def input_listener(state_machine, world, conductor, drift_engine, library, activ
                 playback.set_stereo_spread(float(parts[1]))
             except ValueError:
                 pass
+        elif cmd == "pan" and len(parts) > 1:
+            try:
+                playback.set_pan(float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "trem_rate" and len(parts) > 1:
+            try:
+                playback.set_tremolo(float(parts[1]), playback._tremolo_depth)
+            except ValueError:
+                pass
+        elif cmd == "trem_depth" and len(parts) > 1:
+            try:
+                playback.set_tremolo(playback._tremolo_rate, float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "bitcrush" and len(parts) > 1:
+            try:
+                playback.set_bitcrush(float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "noise" and len(parts) > 1:
+            try:
+                playback.set_noise_floor(float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "fade_time" and len(parts) > 1:
+            try:
+                playback.set_fade_time(float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "rv_size" and len(parts) > 1:
+            try:
+                playback.set_reverb_size(float(parts[1]))
+            except ValueError:
+                pass
+        elif cmd == "rv_fb" and len(parts) > 1:
+            try:
+                playback.set_reverb_feedback(float(parts[1]))
+            except ValueError:
+                pass
 
         elif cmd.lower() == "cam":
             if interact_engine is None:

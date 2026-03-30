@@ -1649,6 +1649,8 @@ class InteractVisualizer(QWidget):
                                     DEFAULT_CAMERA_MAPPING.get("eyes", "(none)"))
         self.map_tilt = _MappingRow("head tilt", AUDIO_TARGETS,
                                     DEFAULT_CAMERA_MAPPING.get("head_tilt", "(none)"))
+        self.map_handx = _MappingRow("hand x", AUDIO_TARGETS,
+                                      DEFAULT_CAMERA_MAPPING.get("hand_x", "(none)"))
         self.map_handy = _MappingRow("hand y", AUDIO_TARGETS,
                                      DEFAULT_CAMERA_MAPPING.get("hand_y", "(none)"))
         self.map_spread = _MappingRow("spread", AUDIO_TARGETS,
@@ -1656,7 +1658,7 @@ class InteractVisualizer(QWidget):
         self.map_vel = _MappingRow("velocity", AUDIO_TARGETS,
                                    DEFAULT_CAMERA_MAPPING.get("hand_velocity", "(none)"))
         for m in (self.map_mouth, self.map_eyes, self.map_tilt,
-                  self.map_handy, self.map_spread, self.map_vel):
+                  self.map_handx, self.map_handy, self.map_spread, self.map_vel):
             lay.addWidget(m)
 
         lay.addSpacing(10)
@@ -1672,8 +1674,19 @@ class InteractVisualizer(QWidget):
         self.rv_bar = _SignalBar("reverb")
         self.dist_bar = _SignalBar("distortion")
         self.spread_bar = _SignalBar("spread")
+        self.pan_bar = _SignalBar("pan")
+        self.trem_rate_bar = _SignalBar("tremolo rate")
+        self.trem_depth_bar = _SignalBar("tremolo depth")
+        self.bitcrush_bar = _SignalBar("bitcrush")
+        self.noise_bar = _SignalBar("noise floor")
+        self.fade_bar = _SignalBar("fade time")
+        self.rv_size_bar = _SignalBar("reverb size")
+        self.rv_fb_bar = _SignalBar("reverb feedback")
         for b in (self.gain_bar, self.lp_bar, self.hp_bar,
-                  self.rv_bar, self.dist_bar, self.spread_bar):
+                  self.rv_bar, self.dist_bar, self.spread_bar,
+                  self.pan_bar, self.trem_rate_bar, self.trem_depth_bar,
+                  self.bitcrush_bar, self.noise_bar, self.fade_bar,
+                  self.rv_size_bar, self.rv_fb_bar):
             lay.addWidget(b)
 
         lay.addSpacing(10)
@@ -1723,18 +1736,27 @@ class InteractVisualizer(QWidget):
         self.map_mouth.set_value(normalize_input("mouth", feat))
         self.map_eyes.set_value(normalize_input("eyes", feat))
         self.map_tilt.set_value(normalize_input("head_tilt", feat))
+        self.map_handx.set_value(normalize_input("hand_x", feat))
         self.map_handy.set_value(normalize_input("hand_y", feat))
         self.map_spread.set_value(normalize_input("hand_spread", feat))
         self.map_vel.set_value(normalize_input("hand_velocity", feat))
 
         # Audio output — use the mapped values we actually sent
         a = audio_out or {}
-        self.gain_bar.set_value(a.get("master_gain", 0))
-        self.lp_bar.set_value(a.get("lowpass", 0))
+        self.gain_bar.set_value(a.get("master_gain", 1))
+        self.lp_bar.set_value(a.get("lowpass", 1))
         self.hp_bar.set_value(a.get("highpass", 0))
         self.rv_bar.set_value(a.get("reverb", 0))
         self.dist_bar.set_value(a.get("distortion", 0))
         self.spread_bar.set_value(a.get("stereo_spread", 0))
+        self.pan_bar.set_value(a.get("pan", 0.5))
+        self.trem_rate_bar.set_value(a.get("tremolo_rate", 0))
+        self.trem_depth_bar.set_value(a.get("tremolo_depth", 0))
+        self.bitcrush_bar.set_value(a.get("bitcrush", 0))
+        self.noise_bar.set_value(a.get("noise_floor", 0))
+        self.fade_bar.set_value(a.get("fade_time", 0.5))
+        self.rv_size_bar.set_value(a.get("reverb_size", 0.5))
+        self.rv_fb_bar.set_value(a.get("reverb_feedback", 0.5))
 
         # Active driver — find which mapped input has highest activation
         mapping = self.get_mapping()
@@ -1757,6 +1779,7 @@ class InteractVisualizer(QWidget):
             "mouth":         self.map_mouth.target,
             "eyes":          self.map_eyes.target,
             "head_tilt":     self.map_tilt.target,
+            "hand_x":        self.map_handx.target,
             "hand_y":        self.map_handy.target,
             "hand_spread":   self.map_spread.target,
             "hand_velocity": self.map_vel.target,
@@ -1777,8 +1800,8 @@ class BecomingWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("becoming")
-        self.setMinimumSize(1200, 920)
-        self.resize(1600, 1120)
+        self.setMinimumSize(1400, 1000)
+        self.resize(1800, 1200)
 
         self.engine_proc: subprocess.Popen | None = None
         self.engine_reader_thread: threading.Thread | None = None
@@ -2087,6 +2110,27 @@ class BecomingWindow(QMainWindow):
         mapping = self._visualizer.get_mapping()
         audio_out = map_features_to_audio(snap["features"], mapping)
 
+        # ── Log raw features + mapped audio (every ~2s = every 30th tick) ──
+        self._cam_log_count = getattr(self, '_cam_log_count', 0) + 1
+        if self._cam_log_count >= 30:
+            self._cam_log_count = 0
+            import json, time as _time
+            from interact import normalize_input
+            log_entry = {
+                "t": round(_time.time(), 1),
+                "raw": {k: round(v, 4) if isinstance(v, float) else v
+                        for k, v in snap["features"].items()},
+                "normalized": {inp: round(normalize_input(inp, snap["features"]), 4)
+                               for inp in mapping},
+                "audio_out": {k: round(v, 4) for k, v in audio_out.items()},
+            }
+            log_path = Path("library/cam_input_log.jsonl")
+            try:
+                with open(log_path, "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
+            except Exception:
+                pass
+
         self._visualizer.update_from_snapshot(snap, audio_out)
 
         # ── Build batched command string (only changed audio values) ──
@@ -2097,6 +2141,10 @@ class BecomingWindow(QMainWindow):
         audio_cmd_map = {
             "lowpass": "lp", "highpass": "hp", "reverb": "rv",
             "distortion": "dist", "master_gain": "mg", "stereo_spread": "spread",
+            "pan": "pan", "tremolo_rate": "trem_rate", "tremolo_depth": "trem_depth",
+            "bitcrush": "bitcrush", "noise_floor": "noise",
+            "fade_time": "fade_time", "reverb_size": "rv_size",
+            "reverb_feedback": "rv_fb",
         }
         for key, val in audio_out.items():
             cmd = audio_cmd_map.get(key)

@@ -1,0 +1,12 @@
+Recording started: 2026-03-30T23:04:12.391141
+Duration: 29.9s
+Fragments spawned: 8
+
+  [00:00.58] freesound_110424_5d0b1147  role=event  tags=melodic, crazy, talking, female, voice, girl, comment, serene, craziness, speech, much, vocal, floating, thing, such, foreground_element, woman, talk, tonal
+  [00:08.61] freesound_35561_069874c3  role=texture  tags=dital random pitch shiny sparkle, noise, circuit-bent, texture, accident, distorted, drift_material, experimental, industrial, atonal, mysterious, glitch, found_sound
+  [00:08.61] freesound_514177_4f81371e  role=pulse  tags=drum, tribe, beat, drift_material, percussive, loop, percussion-loop, rescue, african, film, movie, action, mysterious, drums, drum-loop, run, bass-drum, mystery, series, percs, percussion, supernatural, rhythmic, ritual_sound, kick, ritual, ancient, rhythm, synth, mystic, ethnic, esoteric
+  [00:08.62] freesound_361179_e4eac027  role=pulse  tags=impact, percussive, pot, bottle, ting, copper, hit, pail, metal, strike, sound, iron, serene, found_sound, steel, clank, clang, metallic, percussion, pan, pulse_material, tin, pang, rhythmic, grounding, foley, rhythm, dispose, ding
+  [00:20.65] freesound_35576_60127f70  role=texture  tags=noise, repeat stutter fast, circuit-bent, accident, distorted, drift_material, experimental, industrial, mysterious, ritual_sound, glitch
+  [00:20.66] freesound_609780_7237e587  role=pulse  tags=cave, voice, funny, aggressive, rpg, crazy, foreground_element, voiceover, rhythmic, tonal, man
+  [00:26.68] freesound_376700_c4d19008  role=event  tags=noise, glitchy, harsh, aggressive, abstract, electronic, error, computer, distorted, sound-design, drift_material, strange, technical, digital, mysterious, freaky, glitch, weird
+  [00:28.69] freesound_353209_9afb1701  role=event  tags=scream, noise, aggressive, harmonic, electronic, error, computer, distorted, sound-design, digital, noise-modulation, harsh, glitch, rare_event, found_sound

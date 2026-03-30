@@ -21,6 +21,9 @@ FILTER_TAGS = {
     "multisample", "sample", "loop", "one-shot", "stereo", "mono",
     "normalized", "44100", "48000", "16bit", "24bit", "wav", "mp3",
     "flac", "aif", "ogg",
+    # Roles / system words that leak into poems
+    "ground", "texture", "event", "pulse",
+    "morph", "becoming", "soundeffect", "sound effect",
 }
 
 
@@ -69,7 +72,8 @@ Mood: {state} | Phase: {phase} | tension={tension:.1f} | density={density:.1f}{c
 {direction}
 {rhyme_instr}
 
-Write ONE vivid poetic line — bold imagery, unexpected metaphor, sensory language.
+Write ONE short poetic line (under 25 words) — bold imagery, unexpected metaphor, sensory language.
+Do not use the word "becoming" or "morph" or "soundeffect".
 No quotes, no explanation, just the raw line."""
 
 
@@ -89,7 +93,7 @@ def generate_line(
                 "stream": False,
                 "options": {
                     "temperature": 1.0,
-                    "num_predict": 80,
+                    "num_predict": 40,
                 },
             },
             timeout=30,

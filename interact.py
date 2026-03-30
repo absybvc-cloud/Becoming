@@ -173,33 +173,64 @@ class Smoother:
 AUDIO_TARGETS = [
     "(none)", "lowpass", "highpass", "reverb",
     "distortion", "stereo_spread", "master_gain",
+    "pan", "tremolo_rate", "tremolo_depth",
+    "bitcrush", "noise_floor", "fade_time",
+    "reverb_size", "reverb_feedback",
 ]
 
 # Default mapping: input name → audio target
 DEFAULT_CAMERA_MAPPING: dict[str, str] = {
-    "mouth":         "lowpass",
-    "eyes":          "reverb",
-    "head_tilt":     "stereo_spread",
+    "mouth":         "distortion",
+    "eyes":          "tremolo_rate",
+    "head_tilt":     "pan",
+    "hand_x":        "lowpass",
     "hand_y":        "highpass",
-    "hand_spread":   "distortion",
-    "hand_velocity": "master_gain",
+    "hand_spread":   "reverb_feedback",
+    "hand_velocity": "noise_floor",
 }
 
 
 def normalize_input(name: str, features: dict) -> float:
-    """Convert a named camera input to a normalised 0-1 activation value."""
+    """Convert a named camera input to a normalised 0-1 activation value.
+
+    Coefficients calibrated from real capture data (2026-03-30).
+    Raw ranges measured:
+        mouth_openness  0.001 – 0.107
+        eye_openness    0.005 – 0.021
+        head_tilt      -0.32  – -0.04  (user's neutral ≈ -0.25)
+        hand_x          0.07  – 0.50
+        hand_y          0.50  – 0.96
+        hand_distance   0.00  – 1.00
+        hand_velocity   0.00  – 0.085
+    """
     if name == "mouth":
-        return min(1.0, max(0.0, features.get("mouth_openness", 0.0) - 0.025) * 6.0)
+        # idle ~0.001, max ~0.107 → map 0.005–0.10 to 0–1
+        raw = features.get("mouth_openness", 0.0)
+        return min(1.0, max(0.0, raw - 0.005) / 0.095)
     if name == "eyes":
-        return min(1.0, max(0.0, features.get("eye_openness", 0.0) - 0.025) * 12.0)
+        # idle ~0.005, max ~0.021 → map 0.007–0.021 to 0–1
+        raw = features.get("eye_openness", 0.0)
+        return min(1.0, max(0.0, raw - 0.007) / 0.014)
     if name == "head_tilt":
-        return (features.get("head_tilt", 0.0) + 1.0) / 2.0
+        # range -0.32 to -0.04, neutral ~-0.25 → map -0.32...-0.04 to 0–1
+        raw = features.get("head_tilt", 0.0)
+        return min(1.0, max(0.0, (raw + 0.32) / 0.28))
+    if name == "hand_x":
+        # range 0.07–0.93 (mirrored camera) → map to 0–1
+        raw = features.get("hand_x", 0.5)
+        return min(1.0, max(0.0, (raw - 0.07) / 0.86))
     if name == "hand_y":
-        return 1.0 - features.get("hand_y", 0.5)  # inverted: hand up → high
+        # range 0.05–0.96, inverted (hand up = high value)
+        raw = features.get("hand_y", 0.5)
+        return min(1.0, max(0.0, (0.96 - raw) / 0.91))
     if name == "hand_spread":
-        return features.get("hand_distance", 0.0)
+        # 0–1 direct, cap at 0.85 to keep headroom
+        raw = features.get("hand_distance", 0.0)
+        return min(1.0, raw * 0.85)
     if name == "hand_velocity":
-        return features.get("hand_velocity", 0.0)
+        # max ~0.085 → map 0–0.085 to 0–1
+        raw = features.get("hand_velocity", 0.0)
+        return min(1.0, raw / 0.085)
     return 0.0
 
 
@@ -214,13 +245,17 @@ def map_features_to_audio(features: dict, mapping: dict) -> dict:
 
     Hand inputs are silently skipped when no hand is detected.
     """
+    _INVERT_TARGETS = {"master_gain", "lowpass", "fade_time"}
     audio: dict[str, float] = {}
     for input_name, target in mapping.items():
         if not target or target == "(none)":
             continue
         if input_name.startswith("hand_") and not features.get("hand_detected"):
             continue
-        audio[target] = float(np.clip(normalize_input(input_name, features), 0.0, 1.0))
+        val = float(np.clip(normalize_input(input_name, features), 0.0, 1.0))
+        if target in _INVERT_TARGETS:
+            val = 1.0 - val
+        audio[target] = val
     return audio
 
 
@@ -332,6 +367,9 @@ class InteractionEngine:
                 if not ret:
                     time.sleep(0.01)
                     continue
+
+                # Mirror the frame for a natural selfie-view
+                frame = cv2.flip(frame, 1)
 
                 now = time.monotonic()
                 dt = now - prev_time

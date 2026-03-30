@@ -118,6 +118,15 @@ class PlaybackEngine:
         self._reverb = 0.0      # 0-1 wet amount
         self._distortion = 0.0  # 0-1 drive
         self._stereo_spread = 0.5  # 0=mono, 0.5=normal, 1=wide
+        self._pan = 0.5         # 0=full left, 0.5=center, 1=full right
+        self._tremolo_rate = 0.0   # Hz (0 = off)
+        self._tremolo_depth = 0.0  # 0-1
+        self._tremolo_phase = 0.0  # internal LFO phase
+        self._bitcrush = 0.0    # 0-1 (0 = off, 1 = heavy crush)
+        self._noise_floor = 0.0 # 0-1 noise level
+        self._fade_time = 0.5   # 0-1 mapped to 0.1-4.0s crossfade
+        self._reverb_size = 0.5 # 0-1 mapped to 20ms-500ms
+        self._reverb_feedback = 0.5  # 0-1 mapped to 0.0-0.95
         # Filter state (scipy sosfilt_zi)
         self._lp_sos = None
         self._lp_zi = None
@@ -183,17 +192,47 @@ class PlaybackEngine:
             pos = self._reverb_pos
             buf_len = len(buf)
             wet = self._reverb * 0.5  # scale down to avoid runaway
+            fb = 0.05 + self._reverb_feedback * 0.90  # 0.05–0.95
             for i in range(frames):
                 delayed = buf[pos]
                 out_sample = mixed[i] + delayed * wet
-                buf[pos] = mixed[i] + delayed * 0.4  # feedback
+                buf[pos] = mixed[i] + delayed * fb
                 mixed[i] = out_sample
                 pos = (pos + 1) % buf_len
             self._reverb_pos = pos
 
+        # Bitcrush
+        if self._bitcrush > 0.01:
+            levels = max(2, int(2 ** (16 * (1.0 - self._bitcrush))))
+            mixed = np.round(mixed * levels) / levels
+
+        # Tremolo (amplitude LFO)
+        if self._tremolo_depth > 0.01 and self._tremolo_rate > 0.01:
+            rate = 0.5 + self._tremolo_rate * 19.5  # 0.5–20 Hz
+            depth = self._tremolo_depth
+            t = np.arange(frames) / SAMPLE_RATE
+            lfo = (1.0 - depth * 0.5) + (depth * 0.5) * np.sin(
+                2.0 * np.pi * rate * t + self._tremolo_phase
+            )
+            self._tremolo_phase += 2.0 * np.pi * rate * frames / SAMPLE_RATE
+            self._tremolo_phase %= 2.0 * np.pi
+            mixed *= lfo.reshape(-1, 1).astype(np.float32)
+
         # Stereo spread
         if abs(self._stereo_spread - 0.5) > 0.02:
             mixed = _stereo_spread(mixed, self._stereo_spread)
+
+        # Pan
+        if abs(self._pan - 0.5) > 0.02 and mixed.shape[1] >= 2:
+            l_gain = np.sqrt(1.0 - self._pan)
+            r_gain = np.sqrt(self._pan)
+            mixed[:, 0] *= l_gain
+            mixed[:, 1] *= r_gain
+
+        # Noise floor
+        if self._noise_floor > 0.001:
+            noise = self._noise_floor * 0.05 * np.random.randn(frames, CHANNELS).astype(np.float32)
+            mixed += noise
 
         # Master gain
         if abs(self._master_gain - 1.0) > 0.001:
@@ -242,6 +281,36 @@ class PlaybackEngine:
 
     def set_stereo_spread(self, amount: float):
         self._stereo_spread = max(0.0, min(1.0, amount))
+
+    def set_pan(self, value: float):
+        self._pan = max(0.0, min(1.0, value))
+
+    def set_tremolo(self, rate: float, depth: float):
+        self._tremolo_rate = max(0.0, min(1.0, rate))
+        self._tremolo_depth = max(0.0, min(1.0, depth))
+
+    def set_bitcrush(self, amount: float):
+        self._bitcrush = max(0.0, min(1.0, amount))
+
+    def set_noise_floor(self, amount: float):
+        self._noise_floor = max(0.0, min(1.0, amount))
+
+    def set_fade_time(self, amount: float):
+        """Set crossfade duration. amount 0-1 maps to 0.1-4.0 seconds."""
+        global CROSSFADE_DURATION
+        self._fade_time = max(0.0, min(1.0, amount))
+        CROSSFADE_DURATION = 0.1 + self._fade_time * 3.9
+
+    def set_reverb_size(self, amount: float):
+        """Resize reverb buffer. amount 0-1 maps to 20ms-500ms."""
+        self._reverb_size = max(0.0, min(1.0, amount))
+        new_len = int(SAMPLE_RATE * (0.02 + self._reverb_size * 0.48))
+        if new_len != len(self._reverb_buf):
+            self._reverb_buf = np.zeros((new_len, CHANNELS), dtype=np.float32)
+            self._reverb_pos = 0
+
+    def set_reverb_feedback(self, amount: float):
+        self._reverb_feedback = max(0.0, min(1.0, amount))
 
     def _load_audio(self, fragment: Fragment) -> np.ndarray:
         data, sr = sf.read(fragment.file_path, dtype="float32", always_2d=True)
