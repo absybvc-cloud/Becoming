@@ -5,6 +5,7 @@ import sounddevice as sd
 import soundfile as sf
 from pathlib import Path
 from datetime import datetime
+from scipy.signal import butter, sosfilt
 
 from .audio_library import Fragment
 
@@ -12,6 +13,43 @@ from .audio_library import Fragment
 SAMPLE_RATE = 44100
 CHANNELS = 2
 CROSSFADE_DURATION = 2.0  # seconds
+
+
+# ---------------------------------------------------------------------------
+# DSP helpers
+# ---------------------------------------------------------------------------
+
+def _design_lowpass(cutoff_norm: float) -> np.ndarray:
+    """Design 2nd-order Butterworth lowpass. cutoff_norm in (0, 1)."""
+    freq = max(0.01, min(0.99, cutoff_norm))
+    return butter(2, freq, btype='low', output='sos')
+
+
+def _design_highpass(cutoff_norm: float) -> np.ndarray:
+    """Design 2nd-order Butterworth highpass. cutoff_norm in (0, 1)."""
+    freq = max(0.01, min(0.99, cutoff_norm))
+    return butter(2, freq, btype='high', output='sos')
+
+
+def _tanh_distortion(audio: np.ndarray, drive: float) -> np.ndarray:
+    """Soft-clip distortion via tanh waveshaping. drive 0-1."""
+    if drive < 0.01:
+        return audio
+    gain = 1.0 + drive * 10.0  # 1x to 11x overdrive
+    return np.tanh(audio * gain) / np.tanh(gain)
+
+
+def _stereo_spread(audio: np.ndarray, amount: float) -> np.ndarray:
+    """Mid/side stereo width. amount: 0=mono, 0.5=normal, 1=wide."""
+    if audio.shape[1] < 2:
+        return audio
+    mid = (audio[:, 0] + audio[:, 1]) * 0.5
+    side = (audio[:, 0] - audio[:, 1]) * 0.5
+    width = amount * 2.0  # 0=mono center, 1=normal, 2=wide
+    out = np.empty_like(audio)
+    out[:, 0] = mid + side * width
+    out[:, 1] = mid - side * width
+    return out
 
 
 class PlayingFragment:
@@ -73,6 +111,21 @@ class PlaybackEngine:
         self._recording = False
         self._rec_buffers: list[np.ndarray] = []
         self._rec_lock = threading.Lock()
+        # DSP state
+        self._master_gain = 1.0
+        self._lowpass = 1.0     # 0-1 normalized cutoff (1 = wide open)
+        self._highpass = 0.0    # 0-1 normalized cutoff (0 = off)
+        self._reverb = 0.0      # 0-1 wet amount
+        self._distortion = 0.0  # 0-1 drive
+        self._stereo_spread = 0.5  # 0=mono, 0.5=normal, 1=wide
+        # Filter state (scipy sosfilt_zi)
+        self._lp_sos = None
+        self._lp_zi = None
+        self._hp_sos = None
+        self._hp_zi = None
+        # Reverb delay buffer (simple comb feedback)
+        self._reverb_buf = np.zeros((int(SAMPLE_RATE * 0.08), CHANNELS), dtype=np.float32)
+        self._reverb_pos = 0
 
     def start(self):
         self.stream = sd.OutputStream(
@@ -101,12 +154,94 @@ class PlaybackEngine:
                     dead.append(fid)
             for fid in dead:
                 del self.playing[fid]
+
+        # --- DSP chain ---
+
+        # Lowpass filter
+        if self._lowpass < 0.99 and self._lp_sos is not None:
+            try:
+                mixed, self._lp_zi = sosfilt(self._lp_sos, mixed, axis=0, zi=self._lp_zi)
+                mixed = mixed.astype(np.float32)
+            except Exception:
+                pass
+
+        # Highpass filter
+        if self._highpass > 0.01 and self._hp_sos is not None:
+            try:
+                mixed, self._hp_zi = sosfilt(self._hp_sos, mixed, axis=0, zi=self._hp_zi)
+                mixed = mixed.astype(np.float32)
+            except Exception:
+                pass
+
+        # Distortion
+        if self._distortion > 0.01:
+            mixed = _tanh_distortion(mixed, self._distortion)
+
+        # Reverb (simple comb delay)
+        if self._reverb > 0.01:
+            buf = self._reverb_buf
+            pos = self._reverb_pos
+            buf_len = len(buf)
+            wet = self._reverb * 0.5  # scale down to avoid runaway
+            for i in range(frames):
+                delayed = buf[pos]
+                out_sample = mixed[i] + delayed * wet
+                buf[pos] = mixed[i] + delayed * 0.4  # feedback
+                mixed[i] = out_sample
+                pos = (pos + 1) % buf_len
+            self._reverb_pos = pos
+
+        # Stereo spread
+        if abs(self._stereo_spread - 0.5) > 0.02:
+            mixed = _stereo_spread(mixed, self._stereo_spread)
+
+        # Master gain
+        if abs(self._master_gain - 1.0) > 0.001:
+            mixed *= self._master_gain
+
         np.clip(mixed, -1.0, 1.0, out=mixed)
         outdata[:] = mixed
         # Capture for recording
         if self._recording:
             with self._rec_lock:
                 self._rec_buffers.append(mixed.copy())
+
+    # --- DSP setters (thread-safe via atomic float assignment) ---
+
+    def set_master_gain(self, value: float):
+        self._master_gain = max(0.0, min(2.0, value))
+
+    def set_filter(self, lowpass: float, highpass: float):
+        """Set filter cutoffs. lowpass/highpass are 0-1 normalized."""
+        lp = max(0.01, min(0.99, lowpass))
+        hp = max(0.0, min(0.99, highpass))
+        if abs(lp - self._lowpass) > 0.005:
+            self._lowpass = lp
+            if lp < 0.99:
+                self._lp_sos = _design_lowpass(lp)
+                from scipy.signal import sosfilt_zi
+                self._lp_zi = np.stack([sosfilt_zi(self._lp_sos)] * CHANNELS, axis=-1)
+            else:
+                self._lp_sos = None
+                self._lp_zi = None
+        if abs(hp - self._highpass) > 0.005:
+            self._highpass = hp
+            if hp > 0.01:
+                self._hp_sos = _design_highpass(hp)
+                from scipy.signal import sosfilt_zi
+                self._hp_zi = np.stack([sosfilt_zi(self._hp_sos)] * CHANNELS, axis=-1)
+            else:
+                self._hp_sos = None
+                self._hp_zi = None
+
+    def set_reverb(self, amount: float):
+        self._reverb = max(0.0, min(1.0, amount))
+
+    def set_distortion(self, amount: float):
+        self._distortion = max(0.0, min(1.0, amount))
+
+    def set_stereo_spread(self, amount: float):
+        self._stereo_spread = max(0.0, min(1.0, amount))
 
     def _load_audio(self, fragment: Fragment) -> np.ndarray:
         data, sr = sf.read(fragment.file_path, dtype="float32", always_2d=True)

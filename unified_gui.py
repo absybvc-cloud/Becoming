@@ -25,8 +25,8 @@ from PySide6.QtCore import (
     QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QFontMetrics, QLinearGradient,
-    QPainter, QPainterPath, QPen, QRadialGradient,
+    QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient,
+    QPainter, QPainterPath, QPen, QPixmap, QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow,
@@ -109,11 +109,46 @@ QSpinBox {{
 QComboBox {{
     background: {BG_SURFACE};
     border: 1px solid {FG_WHISPER};
-    border-radius: 4px;
-    padding: 4px 8px;
+    border-radius: 6px;
+    padding: 4px 24px 4px 10px;
     color: {FG_PRIMARY};
+    font-size: 12px;
+    min-height: 22px;
 }}
-QComboBox::drop-down {{ border: none; }}
+QComboBox:hover {{
+    border: 1px solid {FG_DIM};
+    background: {BG_PANEL};
+}}
+QComboBox::drop-down {{
+    border: none;
+    width: 20px;
+    subcontrol-position: center right;
+    subcontrol-origin: padding;
+}}
+QComboBox::down-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {FG_DIM};
+    margin-right: 6px;
+}}
+QComboBox QAbstractItemView {{
+    background: {BG_PANEL};
+    border: 1px solid {FG_WHISPER};
+    border-radius: 6px;
+    padding: 4px;
+    selection-background-color: {BG_SURFACE};
+    selection-color: {FG_PRIMARY};
+    outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 5px 10px;
+    border-radius: 4px;
+    min-height: 22px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background: {BG_SURFACE};
+}}
 QLineEdit {{
     background: {BG_SURFACE};
     border: 1px solid {FG_WHISPER};
@@ -366,6 +401,19 @@ class InfluencePanel(QWidget):
         init_row.addWidget(self.init_state_combo)
         lay.addLayout(init_row)
 
+        lay.addSpacing(12)
+
+        # -- Interact (camera) toggle --
+        interact_lbl = QLabel("interact")
+        interact_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;")
+        lay.addWidget(interact_lbl)
+        lay.addSpacing(4)
+
+        self.camera_btn = PillButton("camera off", FG_DIM)
+        self._camera_on = False
+        self.camera_btn.clicked.connect(self._toggle_camera_btn)
+        lay.addWidget(self.camera_btn)
+
         lay.addStretch()
 
         # -- Poem controls --
@@ -401,7 +449,7 @@ class InfluencePanel(QWidget):
 
         tools_row = QHBoxLayout()
         tools_row.setSpacing(6)
-        self.rebalance_btn = PillButton("rebalance", ACCENT_VIOLET)
+        self.rebalance_btn = PillButton("unified harvest", ACCENT_VIOLET)
         tools_row.addWidget(self.rebalance_btn)
         self.break_bal_btn = PillButton("break balance", ACCENT_AMBER)
         tools_row.addWidget(self.break_bal_btn)
@@ -466,6 +514,34 @@ class InfluencePanel(QWidget):
         else:
             self.record_btn.setText("record")
             self.record_btn.setStyleSheet(self._REC_IDLE_STYLE)
+
+    def _toggle_camera_btn(self):
+        self._camera_on = not self._camera_on
+        if self._camera_on:
+            self.camera_btn.setText("camera on")
+            self.camera_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_CYAN}44;
+                    color: {ACCENT_CYAN};
+                    border: 1px solid {ACCENT_CYAN};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_CYAN}66; }}
+            """)
+        else:
+            self.camera_btn.setText("camera off")
+            self.camera_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
+        self.interventionClicked.emit("cam")
 
 
 # ================================================================
@@ -1092,16 +1168,60 @@ class ToolsDialog(QDialog):
         break_btn = PillButton("break balance", ACCENT_AMBER)
         break_btn.clicked.connect(self._break_balance)
         bal_row.addWidget(break_btn)
-        self.rebalance_auto_tag = QCheckBox("auto-tag"); self.rebalance_auto_tag.setChecked(True)
-        bal_row.addWidget(self.rebalance_auto_tag)
-        rebal_btn = PillButton("rebalance", ACCENT_VIOLET)
-        rebal_btn.clicked.connect(self._run_rebalance)
-        bal_row.addWidget(rebal_btn)
-        stop_btn = PillButton("stop", ACCENT_RED)
-        stop_btn.clicked.connect(self._stop_rebalance)
-        bal_row.addWidget(stop_btn)
         bal_row.addStretch()
         llib.addLayout(bal_row)
+        # ── Unified Harvest controls ──
+        harvest_row = QHBoxLayout()
+        self.harvest_mode = QComboBox()
+        self.harvest_mode.addItems(["hybrid", "balance", "drift"])
+        self.harvest_mode.setFixedWidth(110)
+        harvest_row.addWidget(QLabel("mode"))
+        harvest_row.addWidget(self.harvest_mode)
+        self.harvest_limit = QSpinBox()
+        self.harvest_limit.setRange(1, 200)
+        self.harvest_limit.setValue(50)
+        self.harvest_limit.setMinimumWidth(80)
+        self.harvest_limit.setToolTip("total sounds to add to DB")
+        harvest_row.addWidget(QLabel("target"))
+        harvest_row.addWidget(self.harvest_limit)
+        self.harvest_auto_tag = QCheckBox("auto-tag"); self.harvest_auto_tag.setChecked(True)
+        harvest_row.addWidget(self.harvest_auto_tag)
+        unified_btn = PillButton("unified harvest", ACCENT_GOLD)
+        unified_btn.clicked.connect(self._run_unified_harvest)
+        harvest_row.addWidget(unified_btn)
+        stop_btn = PillButton("stop", ACCENT_RED)
+        stop_btn.clicked.connect(self._stop_harvest)
+        harvest_row.addWidget(stop_btn)
+        harvest_row.addStretch()
+        llib.addLayout(harvest_row)
+        # ── Focus / Collapse controls ──
+        fc_row = QHBoxLayout()
+        focus_btn = PillButton("enter drift", ACCENT_VIOLET)
+        focus_btn.setToolTip("force-activate focus mode for harvest")
+        focus_btn.clicked.connect(self._harvest_enter_focus)
+        fc_row.addWidget(focus_btn)
+        collapse_btn = PillButton("force collapse", ACCENT_AMBER)
+        collapse_btn.setToolTip("trigger harvest collapse on dominant cluster")
+        collapse_btn.clicked.connect(self._harvest_force_collapse)
+        fc_row.addWidget(collapse_btn)
+        stabilize_btn = PillButton("stabilize", ACCENT_CYAN)
+        stabilize_btn.setToolTip("cancel focus, reduce drift intensity")
+        stabilize_btn.clicked.connect(self._harvest_stabilize)
+        fc_row.addWidget(stabilize_btn)
+        # Auto-harvest toggle (sends 'ah' command to running engine)
+        self.auto_harvest_cb = QCheckBox("auto harvest")
+        self.auto_harvest_cb.setChecked(True)
+        self.auto_harvest_cb.setToolTip("engine detects its own needs and harvests automatically")
+        self.auto_harvest_cb.stateChanged.connect(self._toggle_auto_harvest)
+        fc_row.addWidget(self.auto_harvest_cb)
+        # Camera interaction toggle (sends 'cam' command to running engine)
+        self.camera_cb = QCheckBox("camera")
+        self.camera_cb.setChecked(False)
+        self.camera_cb.setToolTip("real-time camera + gesture control (face & hands)")
+        self.camera_cb.stateChanged.connect(self._toggle_camera)
+        fc_row.addWidget(self.camera_cb)
+        fc_row.addStretch()
+        llib.addLayout(fc_row)
         self.cluster_chart = ClusterBarChart()
         llib.addWidget(self.cluster_chart, stretch=1)
         grid.addWidget(lg, 1, 0)
@@ -1249,20 +1369,398 @@ class ToolsDialog(QDialog):
             self.append_task_log("balance",
                 f"  {name}: {c['count']}  {c['pct']:.1f}%{deficit}")
 
-    def _run_rebalance(self):
+    def _run_unified_harvest(self):
+        """Run unified harvest engine as a subprocess."""
         if not self._parent:
             return
-        cmd = [str(ROOT / ".venv" / "bin" / "python"), "-u", str(ROOT / "balance.py"), "--rebalance"]
-        if self.rebalance_auto_tag.isChecked():
-            cmd.append("--auto-tag")
-        self._parent._run_cmd_async("rebalance", cmd)
+        mode = self.harvest_mode.currentText()
+        limit = self.harvest_limit.value()
+        cmd = [
+            str(ROOT / ".venv" / "bin" / "python"), "-u",
+            str(ROOT / "unified_harvest.py"),
+            "--mode", mode,
+            "--limit", str(limit),
+        ]
+        if not self.harvest_auto_tag.isChecked():
+            cmd.append("--no-auto-tag")
+        self._parent._run_cmd_async("harvest", cmd)
 
-    def _stop_rebalance(self):
+    def _stop_harvest(self):
         if self._parent:
-            proc = self._parent._async_procs.get("rebalance")
+            proc = self._parent._async_procs.get("harvest")
             if proc and proc.poll() is None:
                 proc.terminate()
-                self._parent._log("rebalance", "stopped by user")
+                self._parent._log("harvest", "stopped by user")
+
+    def _harvest_enter_focus(self):
+        """Run unified harvest with --focus flag to force focus mode."""
+        if not self._parent:
+            return
+        mode = self.harvest_mode.currentText()
+        limit = self.harvest_limit.value()
+        cmd = [
+            str(ROOT / ".venv" / "bin" / "python"), "-u",
+            str(ROOT / "unified_harvest.py"),
+            "--mode", mode,
+            "--limit", str(limit),
+            "--focus",
+        ]
+        if not self.harvest_auto_tag.isChecked():
+            cmd.append("--no-auto-tag")
+        self.append_task_log("focus", "entering drift focus...")
+        self._parent._run_cmd_async("harvest", cmd)
+
+    def _harvest_force_collapse(self):
+        """Run unified harvest with --collapse flag."""
+        if not self._parent:
+            return
+        mode = self.harvest_mode.currentText()
+        limit = self.harvest_limit.value()
+        cmd = [
+            str(ROOT / ".venv" / "bin" / "python"), "-u",
+            str(ROOT / "unified_harvest.py"),
+            "--mode", mode,
+            "--limit", str(limit),
+            "--collapse",
+        ]
+        if not self.harvest_auto_tag.isChecked():
+            cmd.append("--no-auto-tag")
+        self.append_task_log("collapse", "forcing collapse...")
+        self._parent._run_cmd_async("harvest", cmd)
+
+    def _harvest_stabilize(self):
+        """Stop current harvest and switch mode to balance."""
+        self._stop_harvest()
+        self.harvest_mode.setCurrentText("balance")
+        self.append_task_log("stabilize", "harvest mode → balance, focus/collapse cancelled")
+
+    def _toggle_auto_harvest(self):
+        """Send 'ah' command to the running engine to toggle auto-harvest."""
+        self._parent._send_engine_cmd("ah")
+        state = "ON" if self.auto_harvest_cb.isChecked() else "OFF"
+        self.append_task_log("auto-harvest", f"auto harvest → {state}")
+
+    def _toggle_camera(self):
+        """Toggle camera interaction via the main window (runs in GUI process)."""
+        self._parent._toggle_camera()
+        state = "ON" if self.camera_cb.isChecked() else "OFF"
+        self.append_task_log("camera", f"camera interaction → {state}")
+
+
+# ================================================================
+# Interact Visualizer Panel (right overlay)
+# ================================================================
+
+class _SignalBar(QWidget):
+    """Compact horizontal bar with label, fill bar, and numeric value."""
+
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(18)
+        self._label = label
+        self._value = 0.0
+        self._prev_value = 0.0
+        self._flash = 0.0  # 0-1, decays over time
+
+    def set_value(self, v: float):
+        delta = abs(v - self._prev_value)
+        if delta > 0.05:
+            self._flash = min(1.0, delta * 5)
+        else:
+            self._flash = max(0.0, self._flash - 0.08)
+        self._prev_value = self._value
+        self._value = max(0.0, min(1.0, v))
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Label
+        p.setPen(QColor(FG_DIM))
+        p.setFont(QFont("monospace", 9))
+        label_w = 100
+        p.drawText(0, 0, label_w, h, Qt.AlignLeft | Qt.AlignVCenter, self._label)
+
+        # Value text
+        val_w = 36
+        p.setPen(QColor(FG_PRIMARY))
+        p.drawText(w - val_w, 0, val_w, h, Qt.AlignRight | Qt.AlignVCenter,
+                   f"{self._value:.2f}")
+
+        # Bar area
+        bar_x = label_w + 4
+        bar_w = w - label_w - val_w - 12
+        bar_h = 8
+        bar_y = (h - bar_h) // 2
+
+        # Background track
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(BG_SURFACE))
+        p.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, 4, 4)
+
+        # Fill
+        fill_w = int(bar_w * self._value)
+        if fill_w > 0:
+            # Flash color when value changes rapidly
+            if self._flash > 0.2:
+                c = QColor(ACCENT_RED)
+                c.setAlphaF(0.4 + self._flash * 0.4)
+            else:
+                c = QColor(FG_PRIMARY)
+                c.setAlphaF(0.6)
+            p.setBrush(c)
+            p.drawRoundedRect(bar_x, bar_y, fill_w, bar_h, 4, 4)
+
+        p.end()
+
+
+class _MappingRow(QWidget):
+    """Shows:  input_label  →  [target combo]  value"""
+
+    def __init__(self, input_name: str, targets: list[str],
+                 default_target: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(22)
+        self._input = input_name
+        self._value = 0.0
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        lbl = QLabel(input_name)
+        lbl.setFixedWidth(58)
+        lbl.setStyleSheet(f"color: {FG_DIM}; font: 9px monospace;")
+        lay.addWidget(lbl)
+
+        arrow = QLabel("→")
+        arrow.setFixedWidth(12)
+        arrow.setStyleSheet(f"color: {FG_DIM}; font: 9px monospace;")
+        lay.addWidget(arrow)
+
+        self._combo = QComboBox()
+        self._combo.addItems(targets)
+        if default_target in targets:
+            self._combo.setCurrentText(default_target)
+        self._combo.setFixedHeight(20)
+        self._combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {BG_SURFACE}; color: {FG_PRIMARY};
+                border: 1px solid {BG_DEEP}; border-radius: 3px;
+                font: 9px monospace; padding: 0 4px;
+            }}
+            QComboBox::drop-down {{ border: none; width: 14px; }}
+            QComboBox::down-arrow {{ image: none; }}
+        """)
+        lay.addWidget(self._combo, 1)
+
+        self._val_lbl = QLabel("0.00")
+        self._val_lbl.setFixedWidth(34)
+        self._val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._val_lbl.setStyleSheet(f"color: {FG_PRIMARY}; font: 9px monospace;")
+        lay.addWidget(self._val_lbl)
+
+    @property
+    def target(self) -> str:
+        return self._combo.currentText()
+
+    def set_value(self, v: float):
+        self._value = max(0.0, min(1.0, v))
+        self._val_lbl.setText(f"{self._value:.2f}")
+
+
+class InteractVisualizer(QWidget):
+    """
+    Right-side panel showing real-time camera perception feedback:
+    face signals, hand signals, mapping, and effect output bars.
+    Visible only when camera is ON.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(280)
+        self.setStyleSheet(f"background-color: {BG_PANEL};")
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(4)
+
+        _sec = f"color: {FG_DIM}; font-size: 10px; text-transform: uppercase; letter-spacing: 2px;"
+
+        # -- Camera preview --
+        prev_lbl = QLabel("preview")
+        prev_lbl.setStyleSheet(_sec)
+        lay.addWidget(prev_lbl)
+
+        self._preview = QLabel()
+        self._preview.setFixedSize(256, 192)
+        self._preview.setStyleSheet(f"background-color: {BG_SURFACE}; border-radius: 4px;")
+        self._preview.setAlignment(Qt.AlignCenter)
+        self._preview.setText("waiting for camera...")
+        lay.addWidget(self._preview)
+
+        # -- Status --
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; font-style: italic;")
+        self._status_lbl.setWordWrap(True)
+        lay.addWidget(self._status_lbl)
+
+        lay.addSpacing(8)
+
+        # -- Face signals --
+        lbl = QLabel("face")
+        lbl.setStyleSheet(_sec)
+        lay.addWidget(lbl)
+
+        self.mouth_bar = _SignalBar("mouth")
+        self.eye_bar = _SignalBar("eyes")
+        self.tilt_bar = _SignalBar("head tilt")
+        for b in (self.mouth_bar, self.eye_bar, self.tilt_bar):
+            lay.addWidget(b)
+
+        lay.addSpacing(8)
+
+        # -- Hand signals --
+        lbl2 = QLabel("hands")
+        lbl2.setStyleSheet(_sec)
+        lay.addWidget(lbl2)
+
+        self.hand_y_bar = _SignalBar("height")
+        self.hand_dist_bar = _SignalBar("spread")
+        self.hand_vel_bar = _SignalBar("velocity")
+        for b in (self.hand_y_bar, self.hand_dist_bar, self.hand_vel_bar):
+            lay.addWidget(b)
+
+        lay.addSpacing(10)
+
+        # -- Mapping (user-selectable target per input) --
+        from interact import AUDIO_TARGETS, DEFAULT_CAMERA_MAPPING
+        lbl3 = QLabel("mapping")
+        lbl3.setStyleSheet(_sec)
+        lay.addWidget(lbl3)
+
+        self.map_mouth = _MappingRow("mouth", AUDIO_TARGETS,
+                                     DEFAULT_CAMERA_MAPPING.get("mouth", "(none)"))
+        self.map_eyes = _MappingRow("eyes", AUDIO_TARGETS,
+                                    DEFAULT_CAMERA_MAPPING.get("eyes", "(none)"))
+        self.map_tilt = _MappingRow("head tilt", AUDIO_TARGETS,
+                                    DEFAULT_CAMERA_MAPPING.get("head_tilt", "(none)"))
+        self.map_handy = _MappingRow("hand y", AUDIO_TARGETS,
+                                     DEFAULT_CAMERA_MAPPING.get("hand_y", "(none)"))
+        self.map_spread = _MappingRow("spread", AUDIO_TARGETS,
+                                      DEFAULT_CAMERA_MAPPING.get("hand_spread", "(none)"))
+        self.map_vel = _MappingRow("velocity", AUDIO_TARGETS,
+                                   DEFAULT_CAMERA_MAPPING.get("hand_velocity", "(none)"))
+        for m in (self.map_mouth, self.map_eyes, self.map_tilt,
+                  self.map_handy, self.map_spread, self.map_vel):
+            lay.addWidget(m)
+
+        lay.addSpacing(10)
+
+        # -- Audio output --
+        lbl4 = QLabel("audio")
+        lbl4.setStyleSheet(_sec)
+        lay.addWidget(lbl4)
+
+        self.gain_bar = _SignalBar("gain")
+        self.lp_bar = _SignalBar("lowpass")
+        self.hp_bar = _SignalBar("highpass")
+        self.rv_bar = _SignalBar("reverb")
+        self.dist_bar = _SignalBar("distortion")
+        self.spread_bar = _SignalBar("spread")
+        for b in (self.gain_bar, self.lp_bar, self.hp_bar,
+                  self.rv_bar, self.dist_bar, self.spread_bar):
+            lay.addWidget(b)
+
+        lay.addSpacing(10)
+
+        # -- Active driver --
+        self._driver_lbl = QLabel("")
+        self._driver_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px; font-style: italic;")
+        self._driver_lbl.setWordWrap(True)
+        lay.addWidget(self._driver_lbl)
+
+        lay.addStretch()
+
+    def update_preview(self, bgr_frame):
+        """Display a BGR numpy array in the preview label."""
+        import cv2
+        # Resize to fit the preview label
+        h, w = bgr_frame.shape[:2]
+        target_w, target_h = self._preview.width(), self._preview.height()
+        scale = min(target_w / w, target_h / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        small = cv2.resize(bgr_frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        # BGR → RGB
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        qimg = QImage(rgb.data, new_w, new_h, new_w * 3, QImage.Format_RGB888)
+        self._preview.setPixmap(QPixmap.fromImage(qimg))
+
+    def set_status(self, text: str):
+        self._status_lbl.setText(text)
+
+    def update_from_snapshot(self, snap: dict, audio_out: dict | None = None):
+        """Update all bars from a ControlState snapshot + mapped audio output."""
+        feat = snap.get("features", {})
+
+        # Face signals
+        self.mouth_bar.set_value(feat.get("mouth_openness", 0) * 5.0)
+        self.eye_bar.set_value(feat.get("eye_openness", 0) * 10.0)
+        tilt = feat.get("head_tilt", 0)
+        self.tilt_bar.set_value((tilt + 1.0) / 2.0)  # -1..1 → 0..1
+
+        # Hand signals
+        self.hand_y_bar.set_value(feat.get("hand_y", 0))
+        self.hand_dist_bar.set_value(feat.get("hand_distance", 0))
+        self.hand_vel_bar.set_value(feat.get("hand_velocity", 0))
+
+        # Mapping rows — show normalised activation per input
+        from interact import normalize_input
+        self.map_mouth.set_value(normalize_input("mouth", feat))
+        self.map_eyes.set_value(normalize_input("eyes", feat))
+        self.map_tilt.set_value(normalize_input("head_tilt", feat))
+        self.map_handy.set_value(normalize_input("hand_y", feat))
+        self.map_spread.set_value(normalize_input("hand_spread", feat))
+        self.map_vel.set_value(normalize_input("hand_velocity", feat))
+
+        # Audio output — use the mapped values we actually sent
+        a = audio_out or {}
+        self.gain_bar.set_value(a.get("master_gain", 0))
+        self.lp_bar.set_value(a.get("lowpass", 0))
+        self.hp_bar.set_value(a.get("highpass", 0))
+        self.rv_bar.set_value(a.get("reverb", 0))
+        self.dist_bar.set_value(a.get("distortion", 0))
+        self.spread_bar.set_value(a.get("stereo_spread", 0))
+
+        # Active driver — find which mapped input has highest activation
+        mapping = self.get_mapping()
+        pairs = []
+        for inp, tgt in mapping.items():
+            if not tgt or tgt == "(none)":
+                continue
+            if inp.startswith("hand_") and not feat.get("hand_detected"):
+                continue
+            pairs.append((normalize_input(inp, feat), f"{inp} → {tgt}"))
+        if pairs:
+            best = max(pairs, key=lambda p: p[0])
+            self._driver_lbl.setText(f"active: {best[1]}")
+        else:
+            self._driver_lbl.setText("")
+
+    def get_mapping(self) -> dict:
+        """Return the current user-selected mapping {input_name: audio_target}."""
+        return {
+            "mouth":         self.map_mouth.target,
+            "eyes":          self.map_eyes.target,
+            "head_tilt":     self.map_tilt.target,
+            "hand_y":        self.map_handy.target,
+            "hand_spread":   self.map_spread.target,
+            "hand_velocity": self.map_vel.target,
+        }
 
 
 # ================================================================
@@ -1316,7 +1814,7 @@ class BecomingWindow(QMainWindow):
         main_lay.setContentsMargins(0, 0, 0, 0)
         main_lay.setSpacing(0)
 
-        # Main horizontal: influence | drift field | poem
+        # Main horizontal: influence | drift field | (visualizer)
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -1335,6 +1833,19 @@ class BecomingWindow(QMainWindow):
         self._drift = DriftFieldWidget()
         body.addWidget(self._drift, stretch=1)
 
+        # Interact visualizer (right side, hidden by default)
+        self._visualizer = InteractVisualizer()
+        viz_scroll = QScrollArea()
+        viz_scroll.setWidget(self._visualizer)
+        viz_scroll.setWidgetResizable(True)
+        viz_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        viz_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        viz_scroll.setFixedWidth(self._visualizer.width() + 6)
+        viz_scroll.setStyleSheet(f"QScrollArea {{ background: {BG_PANEL}; border: none; }}")
+        self._viz_scroll = viz_scroll
+        self._viz_scroll.setVisible(False)
+        body.addWidget(self._viz_scroll)
+
         main_lay.addLayout(body, stretch=1)
 
         # Whisper bar
@@ -1343,7 +1854,7 @@ class BecomingWindow(QMainWindow):
 
     def _connect_signals(self):
         self._influence.sliderChanged.connect(self._on_slider)
-        self._influence.interventionClicked.connect(self._send_engine_cmd)
+        self._influence.interventionClicked.connect(self._on_intervention)
         self._influence.engineStartRequested.connect(self._start_engine)
         self._influence.engineStopRequested.connect(self._stop_engine)
         self._influence.poem_toggle_btn.clicked.connect(self._toggle_poem)
@@ -1353,6 +1864,13 @@ class BecomingWindow(QMainWindow):
         self._influence.rebalance_btn.clicked.connect(self._run_rebalance_quick)
         self._influence.break_bal_btn.clicked.connect(self._break_balance_quick)
         self._influence.recordToggled.connect(self._on_record_toggled)
+
+    def _on_intervention(self, cmd: str):
+        """Route intervention commands; intercept 'cam' for local handling."""
+        if cmd == "cam":
+            self._toggle_camera()
+        else:
+            self._send_engine_cmd(cmd)
 
     def keyPressEvent(self, event):
         # Ctrl+D or backtick toggles debug log
@@ -1380,10 +1898,10 @@ class BecomingWindow(QMainWindow):
         self._open_tools()
 
     def _run_rebalance_quick(self):
-        """Run rebalance with auto-tag directly."""
+        """Run unified harvest (hybrid mode) with auto-tag directly."""
         cmd = [str(ROOT / ".venv" / "bin" / "python"), "-u",
-               str(ROOT / "balance.py"), "--rebalance", "--auto-tag"]
-        self._run_cmd_async("rebalance", cmd)
+               str(ROOT / "unified_harvest.py"), "--mode", "hybrid"]
+        self._run_cmd_async("harvest", cmd)
 
     def _break_balance_quick(self):
         """Run break balance analysis in background."""
@@ -1481,7 +1999,7 @@ class BecomingWindow(QMainWindow):
         self.engine_reader_thread = threading.Thread(target=read_loop, daemon=True)
         self.engine_reader_thread.start()
 
-    def _send_engine_cmd(self, cmd: str):
+    def _send_engine_cmd(self, cmd: str, *, silent: bool = False):
         if not self.engine_proc or self.engine_proc.poll() is not None or not self.engine_proc.stdin:
             return
         if not cmd.endswith("\n"):
@@ -1489,7 +2007,8 @@ class BecomingWindow(QMainWindow):
         try:
             self.engine_proc.stdin.write(cmd)
             self.engine_proc.stdin.flush()
-            self._log("engine", f"> {cmd.strip()}")
+            if not silent:
+                self._log("engine", f"> {cmd.strip()}")
         except Exception:
             pass
 
@@ -1499,10 +2018,116 @@ class BecomingWindow(QMainWindow):
         else:
             self._send_engine_cmd("rec_stop")
 
+    # ── Camera / Interaction ───────────────────────────────────────────────
+
+    def _toggle_camera(self):
+        """Start or stop the camera interaction locally in the GUI process."""
+        if not hasattr(self, '_interact_engine') or self._interact_engine is None:
+            # First-time init
+            try:
+                from interact import InteractionEngine, ControlState
+                self._control_state = ControlState()
+                self._interact_engine = InteractionEngine(self._control_state)
+            except Exception as e:
+                self._log("interact", f"camera unavailable: {e}")
+                self._influence._camera_on = False
+                self._influence.camera_btn.setText("camera off")
+                return
+
+        if self._interact_engine.running:
+            # ── Stop ──────────────────────────────────────────────────
+            self._interact_engine.stop()
+            self._interact_timer.stop()
+            self._viz_scroll.setVisible(False)
+
+            # Reset audio DSP to safe defaults (camera only touches audio)
+            _audio_defaults = {"lp": 1.0, "hp": 0.0, "rv": 0.0,
+                               "dist": 0.0, "mg": 1.0, "spread": 0.5}
+            for cmd, val in _audio_defaults.items():
+                self._send_engine_cmd(f"{cmd} {val:.3f}", silent=True)
+            self._cam_prev_audio = None
+            self._cam_frame_skip = 0
+            self._log("interact", "camera OFF — audio reset")
+        else:
+            # ── Start ─────────────────────────────────────────────────
+            self._cam_prev_audio = None   # track previous audio for delta detection
+            self._cam_frame_skip = 0      # frame counter for preview throttle
+
+            self._interact_engine.start()
+            if not hasattr(self, '_interact_timer'):
+                self._interact_timer = QTimer(self)
+                self._interact_timer.timeout.connect(self._interact_tick)
+            self._interact_timer.start(66)
+            self._viz_scroll.setVisible(True)
+            self._log("interact", "camera ON — visualizer active")
+
+    def _interact_tick(self):
+        """Called ~15 Hz: read features, apply mapping, send audio to engine."""
+        if not hasattr(self, '_control_state'):
+            return
+
+        # Update preview at ~5 Hz (every 3rd tick) to reduce main-thread load
+        self._cam_frame_skip = getattr(self, '_cam_frame_skip', 0) + 1
+        if self._cam_frame_skip >= 3:
+            self._cam_frame_skip = 0
+            if hasattr(self, '_interact_engine') and self._interact_engine:
+                frame = self._interact_engine.grab_frame()
+                if frame is not None:
+                    self._visualizer.update_preview(frame)
+
+        snap = self._control_state.snapshot()
+        if not snap.get("active"):
+            self._visualizer.set_status("connecting to camera...")
+            return
+
+        self._visualizer.set_status("")
+
+        # ── Apply mapping from visualiser combos ──────────────────────
+        from interact import map_features_to_audio
+        mapping = self._visualizer.get_mapping()
+        audio_out = map_features_to_audio(snap["features"], mapping)
+
+        self._visualizer.update_from_snapshot(snap, audio_out)
+
+        # ── Build batched command string (only changed audio values) ──
+        prev = getattr(self, '_cam_prev_audio', None)
+        cmds = []
+        threshold = 0.005  # ignore jitter below this
+
+        audio_cmd_map = {
+            "lowpass": "lp", "highpass": "hp", "reverb": "rv",
+            "distortion": "dist", "master_gain": "mg", "stereo_spread": "spread",
+        }
+        for key, val in audio_out.items():
+            cmd = audio_cmd_map.get(key)
+            if cmd is None:
+                continue
+            if prev is None or abs(val - prev.get(key, -1)) > threshold:
+                cmds.append(f"{cmd} {val:.3f}")
+
+        self._cam_prev_audio = dict(audio_out)
+
+        # Send all changed commands in one write + one flush
+        if cmds and self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
+            try:
+                batch = "\n".join(cmds) + "\n"
+                self.engine_proc.stdin.write(batch)
+                self.engine_proc.stdin.flush()
+            except Exception:
+                pass
+
     def _stop_engine(self):
         if not self.engine_proc or self.engine_proc.poll() is not None:
             self._whisper.set_status("engine stopped")
             return
+        # Stop camera if running
+        if hasattr(self, '_interact_engine') and self._interact_engine and self._interact_engine.running:
+            self._interact_engine.stop()
+            if hasattr(self, '_interact_timer'):
+                self._interact_timer.stop()
+            self._viz_scroll.setVisible(False)
+            self._influence._camera_on = False
+            self._influence.camera_btn.setText("camera off")
         try:
             if self.engine_proc.stdin:
                 self.engine_proc.stdin.write("q\n")
@@ -1537,6 +2162,9 @@ class BecomingWindow(QMainWindow):
                 code = proc.wait()
                 self._async_procs.pop(label, None)
                 self.log_queue.put((label, f"[done exit={code}]"))
+                # After harvest, tell engine to reload new assets into active pool
+                if label == "harvest":
+                    self._send_engine_cmd("reload")
             except Exception as e:
                 self._async_procs.pop(label, None)
                 self.log_queue.put((label, f"ERROR: {e}"))
@@ -1549,7 +2177,7 @@ class BecomingWindow(QMainWindow):
     def _log(self, source: str, line: str):
         self.log_queue.put((source, line))
 
-    _TASK_SOURCES = {"harvest", "auto_tag", "rebalance", "balance", "library", "recording"}
+    _TASK_SOURCES = {"harvest", "auto_tag", "balance", "library", "recording"}
 
     def _drain_log_queue(self):
         try:

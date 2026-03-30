@@ -310,6 +310,48 @@ class ActivePool:
 
         return frag
 
+    # ── Discover + ingest new DB assets not yet in the pool ───────────────
+
+    def ingest_new_from_db(self) -> int:
+        """
+        Scan the database for approved assets not yet in the active pool.
+        Load and validate each one, adding it with warmup weight.
+        Returns number of new assets ingested.
+        Thread-safe (acquires staging lock).
+        """
+        known_asset_ids = {f.asset_id for f in self._fragments.values()}
+
+        db = sqlite3.connect(self.db_path)
+        db.row_factory = sqlite3.Row
+        ingested = 0
+
+        try:
+            rows = db.execute("""
+                SELECT id FROM audio_assets
+                WHERE normalized_file_path IS NOT NULL
+            """).fetchall()
+
+            for row in rows:
+                aid = row["id"]
+                if aid in known_asset_ids:
+                    continue
+                frag = self._load_fragment(db, aid)
+                if frag is None:
+                    continue
+                if not self._validate(frag):
+                    continue
+                self._fragments[frag.id] = frag
+                self._warmup_remaining[frag.id] = WARMUP_CYCLES
+                ingested += 1
+        finally:
+            db.close()
+
+        if ingested > 0:
+            self.total_merged += ingested
+            print(f"[active-pool] ingested {ingested} new assets from DB (total: {len(self._fragments)})")
+
+        return ingested
+
     # ── Validation (§6: Minimum Activation Criteria) ────────────────────
 
     @staticmethod

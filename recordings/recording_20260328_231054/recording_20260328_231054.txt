@@ -1,0 +1,11 @@
+Recording started: 2026-03-28T23:10:54.878791
+Duration: 134.6s
+Fragments spawned: 7
+
+  [00:14.56] freesound_575803_5043dd9a  role=texture  tags=hell, ominous, bass, dark, evil, horror, distorted, overload, noise, metal, creepy, death, overdrive, black, deathgrips, crunch, atonal, distortion, industrial, harmonic, doom, drift_material, feedback, sinister, garage, grips, harsh, spooky, scary, ghostly
+  [00:20.61] freesound_452908_dda1a96a  role=texture  tags=white, switch, noise, grounding, cassette, drift_material, found_sound, full, hiss, static, tape, off, texture, ground, hum, level
+  [00:30.64] freesound_321143_f79378d1  role=event  tags=ominous, broken, smash, shatter, breaking, noise, crash, demolish, rare_event, glass, percussive, damage, bang, break, ADPP, industrial, concrete, impact, stone
+  [01:20.77] freesound_540040_af8efce3  role=texture  tags=terrifying, dark, drone, ambience, horror, machine, cinematic, pad, noise, metal, environment, creepy, industrial-textures, atmos, ambient, atmosphere, effect, texture, nightmare, industrial, drift_material, fx, sinister, background, soundscape, game, spooky, film, scary, suspense, sound
+  [01:32.80] freesound_150005_55efc929  role=texture  tags=hollow, White, Cassette, Analog, noise, drift_material, Noise, Blank, Tape, Hiss, mysterious, texture, analog
+  [01:58.87] freesound_199099_67081578  role=event  tags=percussive, field_recording, abstract, noise, Loop, drift_material, Abstract, mysterious, Percussion
+  [02:02.89] freesound_815869_ee77ea6a  role=texture  tags=meditative, lo-fi, tape, record, hum, vintage, analog, noise, cassette, electronic, field_recording, grounding, static, warmth, texture, dust, hiss, drift_material, crackle, lofi, warm
