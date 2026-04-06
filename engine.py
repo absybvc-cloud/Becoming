@@ -53,6 +53,7 @@ def build_engine(
     tension: float = 0.3,
     density: float = 0.5,
     temperature: float = 0.5,
+    output_device: str | None = None,
 ) -> tuple:
     """Build and wire all engine components."""
 
@@ -86,7 +87,7 @@ def build_engine(
         world=world,
     )
 
-    playback = PlaybackEngine()
+    playback = PlaybackEngine(output_device=output_device)
 
     intervention_queue = InterventionQueue()
 
@@ -147,7 +148,7 @@ def status_line(state_machine, conductor, memory, world, playback, drift_engine,
         print(f"  └ {layer.role:>7}: {lid} state={layer.state.value} gain={layer.current_gain:.2f} rem={remaining:.0f}s")
 
 
-def input_listener(state_machine, world, conductor, drift_engine, library, active_pool, intervention_queue, stop_event, playback, auto_harvest_enabled=None, interact_engine=None):
+def input_listener(state_machine, world, conductor, drift_engine, library, active_pool, intervention_queue, stop_event, playback, auto_harvest_enabled=None, interact_engine=None, audio_input_engine=None):
     """Listen for runtime control commands on stdin."""
 
     # Recording state
@@ -166,6 +167,10 @@ def input_listener(state_machine, world, conductor, drift_engine, library, activ
             })
 
     conductor.spawn_callbacks.append(_on_spawn)
+
+    # Throttle verbose prints for continuous mic-driven values
+    _last_logged = {"t": -1.0, "d": -1.0, "T": -1.0}
+    _LOG_DELTA = 0.05  # only log when value changes by more than this
 
     while not stop_event.is_set():
         try:
@@ -193,14 +198,18 @@ def input_listener(state_machine, world, conductor, drift_engine, library, activ
                 val = float(parts[1])
                 world.update(tension=max(0.0, min(1.0, val)))
                 drift_engine.update_world(tension=val)
-                print(f"[engine] tension set to {val:.2f}")
+                if abs(val - _last_logged["t"]) >= _LOG_DELTA:
+                    print(f"[engine] tension set to {val:.2f}")
+                    _last_logged["t"] = val
             except ValueError:
                 print("[engine] usage: t <0-1>")
         elif cmd == "T" and len(parts) > 1:
             try:
                 val = float(parts[1])
                 conductor.transitions.set_temperature(max(0.0, min(1.0, val)))
-                print(f"[engine] temperature set to {val:.2f}")
+                if abs(val - _last_logged["T"]) >= _LOG_DELTA:
+                    print(f"[engine] temperature set to {val:.2f}")
+                    _last_logged["T"] = val
             except ValueError:
                 print("[engine] usage: T <0-1>")
         elif cmd.lower() == "d" and len(parts) > 1:
@@ -208,7 +217,9 @@ def input_listener(state_machine, world, conductor, drift_engine, library, activ
                 val = float(parts[1])
                 world.update(density=max(0.0, min(1.0, val)))
                 drift_engine.update_world(density=val)
-                print(f"[engine] density set to {val:.2f}")
+                if abs(val - _last_logged["d"]) >= _LOG_DELTA:
+                    print(f"[engine] density set to {val:.2f}")
+                    _last_logged["d"] = val
             except ValueError:
                 print("[engine] usage: d <0-1>")
         elif cmd.lower() == "p" and len(parts) > 1:
@@ -403,8 +414,21 @@ def input_listener(state_machine, world, conductor, drift_engine, library, activ
                 interact_engine.start()
                 print("[engine] camera: ON")
 
+        elif cmd.lower() == "mic":
+            if audio_input_engine is None:
+                print("[engine] external audio input not available (missing sounddevice or input device)")
+            elif audio_input_engine.running:
+                audio_input_engine.stop()
+                print("[engine] mic: OFF")
+            else:
+                try:
+                    audio_input_engine.start()
+                    print("[engine] mic: ON")
+                except Exception as e:
+                    print(f"[engine] mic start failed: {e}")
+
         else:
-            print("[engine] commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | D (drift) | dur <0.1-3> | poem | rec | rec_stop | m | ! | rupture | silence | drift | collapse | stabilize | ah | reload | cam | lp/hp/rv/dist/mg/spread <0-1> | q")
+            print("[engine] commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | D (drift) | dur <0.1-3> | poem | rec | rec_stop | m | ! | rupture | silence | drift | collapse | stabilize | ah | reload | cam | mic | lp/hp/rv/dist/mg/spread <0-1> | q")
 
 
 # ── Interaction Apply Loop ─────────────────────────────────────────────────
@@ -554,6 +578,10 @@ def main():
                         help="Enable autonomous need-based harvesting (default: on)")
     parser.add_argument("--no-auto-harvest", dest="auto_harvest", action="store_false",
                         help="Disable autonomous harvesting")
+    parser.add_argument("--audio-device", type=str, default="ZOOM U-22 Driver",
+                        help="Input audio device name hint for external audio integration")
+    parser.add_argument("--output-device", type=str, default="Scarlett Solo",
+                        help="Output audio device name hint for playback")
     args = parser.parse_args()
 
     print("╔══════════════════════════════════════════╗")
@@ -567,6 +595,7 @@ def main():
         tension=args.tension,
         density=args.density,
         temperature=args.temperature,
+        output_device=args.output_device,
     )
 
     stop_event = threading.Event()
@@ -574,6 +603,8 @@ def main():
     def shutdown(sig, frame):
         print("\n[engine] shutting down...")
         stop_event.set()
+        if audio_input_engine is not None:
+            audio_input_engine.stop()
         if interact_engine is not None:
             interact_engine.stop()
         conductor.stop()
@@ -593,14 +624,21 @@ def main():
 
     # Set up camera interaction (optional — graceful if deps missing)
     interact_engine = None
+    audio_input_engine = None
     control_state = None
     try:
-        from interact import InteractionEngine, ControlState
+        from interact import InteractionEngine, ExternalAudioInputEngine, ControlState
         control_state = ControlState()
         interact_engine = InteractionEngine(control_state)
+        audio_input_engine = ExternalAudioInputEngine(
+            control_state,
+            device_hint=args.audio_device,
+        )
         print("[engine] camera interaction: available (type 'cam' to toggle)")
+        print(f"[engine] external audio input: available (type 'mic' to toggle, device hint='{args.audio_device}')")
     except Exception as e:
         print(f"[engine] camera interaction: unavailable ({e})")
+        print(f"[engine] external audio input: unavailable ({e})")
 
     # Set up auto-harvest (must exist before input_listener references it)
     need_detector = NeedDetector()
@@ -614,7 +652,7 @@ def main():
     # Start input listener in background
     input_thread = threading.Thread(
         target=input_listener,
-        args=(state_machine, world, conductor, drift_engine, library, active_pool, intervention_queue, stop_event, playback, auto_harvest_enabled, interact_engine),
+        args=(state_machine, world, conductor, drift_engine, library, active_pool, intervention_queue, stop_event, playback, auto_harvest_enabled, interact_engine, audio_input_engine),
         daemon=True,
     )
     input_thread.start()
@@ -637,7 +675,7 @@ def main():
     harvest_thread.start()
 
     print()
-    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | poem | m | ! | rupture | silence | drift | collapse | stabilize | ah | cam | q")
+    print("[engine] running. Commands: s <state> | t <0-1> | d <0-1> | T <0-1> | p <phase> | poem | m | ! | rupture | silence | drift | collapse | stabilize | ah | cam | mic | q")
     print()
 
     # Status loop

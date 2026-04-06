@@ -108,5 +108,9 @@ def generate_line(
                 return line
 
         return raw[:120] if raw else None
-    except Exception:
-        return None
+    except requests.ConnectionError:
+        raise RuntimeError(f"cannot connect to Ollama at {base} — is it running?")
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Ollama error for model '{model}': {e}")
+    except Exception as e:
+        raise RuntimeError(f"poem generation failed: {e}")

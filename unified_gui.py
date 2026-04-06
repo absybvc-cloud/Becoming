@@ -414,7 +414,39 @@ class InfluencePanel(QWidget):
         self.camera_btn.clicked.connect(self._toggle_camera_btn)
         lay.addWidget(self.camera_btn)
 
-        lay.addStretch()
+        self.mic_btn = PillButton("mic off", FG_DIM)
+        self._mic_on = False
+        self.mic_btn.clicked.connect(self._toggle_mic_btn)
+        lay.addWidget(self.mic_btn)
+
+        mic_row = QHBoxLayout()
+        mic_lbl = QLabel("input device")
+        mic_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px;")
+        mic_row.addWidget(mic_lbl)
+        self.mic_device_combo = QComboBox()
+        self.mic_device_combo.setEditable(True)
+        self.mic_device_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.mic_device_combo.setMinimumContentsLength(18)
+        self._populate_mic_devices()
+        mic_row.addWidget(self.mic_device_combo, stretch=1)
+        lay.addLayout(mic_row)
+
+        out_row = QHBoxLayout()
+        out_lbl = QLabel("output device")
+        out_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 10px;")
+        out_row.addWidget(out_lbl)
+        self.out_device_combo = QComboBox()
+        self.out_device_combo.setEditable(True)
+        self.out_device_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.out_device_combo.setMinimumContentsLength(18)
+        self._populate_out_devices()
+        out_row.addWidget(self.out_device_combo, stretch=1)
+        lay.addLayout(out_row)
+
+        self.slice_btn = PillButton("slice off", FG_DIM)
+        self._slice_on = False
+        self.slice_btn.clicked.connect(self._toggle_slice_btn)
+        lay.addWidget(self.slice_btn)
 
         # -- Poem controls --
         poem_lbl = QLabel("poem")
@@ -462,6 +494,8 @@ class InfluencePanel(QWidget):
         self.library_btn = PillButton("library", FG_DIM)
         tools_row2.addWidget(self.library_btn)
         lay.addLayout(tools_row2)
+
+        lay.addStretch()
 
     _REC_IDLE_STYLE = f"""
         QPushButton {{
@@ -542,6 +576,106 @@ class InfluencePanel(QWidget):
                 QPushButton:hover {{ background-color: {FG_DIM}44; }}
             """)
         self.interventionClicked.emit("cam")
+
+    def _toggle_mic_btn(self):
+        self._mic_on = not self._mic_on
+        if self._mic_on:
+            self.mic_btn.setText("mic on")
+            self.mic_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_AMBER}44;
+                    color: {ACCENT_AMBER};
+                    border: 1px solid {ACCENT_AMBER};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_AMBER}66; }}
+            """)
+        else:
+            self.mic_btn.setText("mic off")
+            self.mic_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
+        self.interventionClicked.emit("mic")
+
+    def _toggle_slice_btn(self):
+        self._slice_on = not self._slice_on
+        if self._slice_on:
+            self.slice_btn.setText("slice on")
+            self.slice_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_CYAN}44;
+                    color: {ACCENT_CYAN};
+                    border: 1px solid {ACCENT_CYAN};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_CYAN}66; }}
+            """)
+        else:
+            self.slice_btn.setText("slice off")
+            self.slice_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
+        self.interventionClicked.emit("slice")
+
+    def _populate_mic_devices(self):
+        preferred = "ZOOM U-22 Driver"
+        device_names: list[str] = [preferred]
+        try:
+            import sounddevice as _sd
+            for dev in _sd.query_devices():
+                if int(dev.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+                name = str(dev.get("name", "")).strip()
+                if name and name not in device_names:
+                    device_names.append(name)
+        except Exception:
+            pass
+
+        self.mic_device_combo.clear()
+        self.mic_device_combo.addItems(device_names)
+        idx = self.mic_device_combo.findText(preferred)
+        if idx >= 0:
+            self.mic_device_combo.setCurrentIndex(idx)
+        elif self.mic_device_combo.count() > 0:
+            self.mic_device_combo.setCurrentIndex(0)
+
+    def _populate_out_devices(self):
+        preferred = "Scarlett Solo"
+        device_names: list[str] = [preferred]
+        try:
+            import sounddevice as _sd
+            for dev in _sd.query_devices():
+                if int(dev.get("max_output_channels", 0) or 0) <= 0:
+                    continue
+                name = str(dev.get("name", "")).strip()
+                if name and name not in device_names:
+                    device_names.append(name)
+        except Exception:
+            pass
+
+        self.out_device_combo.clear()
+        self.out_device_combo.addItems(device_names)
+        idx = self.out_device_combo.findText(preferred)
+        if idx >= 0:
+            self.out_device_combo.setCurrentIndex(idx)
+        elif self.out_device_combo.count() > 0:
+            self.out_device_combo.setCurrentIndex(0)
 
 
 # ================================================================
@@ -1220,6 +1354,11 @@ class ToolsDialog(QDialog):
         self.camera_cb.setToolTip("real-time camera + gesture control (face & hands)")
         self.camera_cb.stateChanged.connect(self._toggle_camera)
         fc_row.addWidget(self.camera_cb)
+        self.mic_cb = QCheckBox("mic")
+        self.mic_cb.setChecked(False)
+        self.mic_cb.setToolTip("external sound card input to behavior controls")
+        self.mic_cb.stateChanged.connect(self._toggle_mic)
+        fc_row.addWidget(self.mic_cb)
         fc_row.addStretch()
         llib.addLayout(fc_row)
         self.cluster_chart = ClusterBarChart()
@@ -1445,6 +1584,12 @@ class ToolsDialog(QDialog):
         self._parent._toggle_camera()
         state = "ON" if self.camera_cb.isChecked() else "OFF"
         self.append_task_log("camera", f"camera interaction → {state}")
+
+    def _toggle_mic(self):
+        """Toggle external audio input via the main window (runs in GUI process)."""
+        self._parent._toggle_mic()
+        state = "ON" if self.mic_cb.isChecked() else "OFF"
+        self.append_task_log("mic", f"external audio input → {state}")
 
 
 # ================================================================
@@ -1878,6 +2023,7 @@ class BecomingWindow(QMainWindow):
     def _connect_signals(self):
         self._influence.sliderChanged.connect(self._on_slider)
         self._influence.interventionClicked.connect(self._on_intervention)
+        self._influence.mic_device_combo.currentTextChanged.connect(self._on_mic_device_changed)
         self._influence.engineStartRequested.connect(self._start_engine)
         self._influence.engineStopRequested.connect(self._stop_engine)
         self._influence.poem_toggle_btn.clicked.connect(self._toggle_poem)
@@ -1889,9 +2035,13 @@ class BecomingWindow(QMainWindow):
         self._influence.recordToggled.connect(self._on_record_toggled)
 
     def _on_intervention(self, cmd: str):
-        """Route intervention commands; intercept 'cam' for local handling."""
+        """Route intervention commands; intercept local interaction toggles."""
         if cmd == "cam":
             self._toggle_camera()
+        elif cmd == "mic":
+            self._toggle_mic()
+        elif cmd == "slice":
+            self._toggle_slicing()
         else:
             self._send_engine_cmd(cmd)
 
@@ -1993,6 +2143,10 @@ class BecomingWindow(QMainWindow):
             "--temperature", f"{temp:.3f}",
         ]
 
+        out_dev = self._influence.out_device_combo.currentText().strip()
+        if out_dev:
+            cmd.extend(["--output-device", out_dev])
+
         try:
             self.engine_proc = subprocess.Popen(
                 cmd, cwd=str(ROOT),
@@ -2041,26 +2195,121 @@ class BecomingWindow(QMainWindow):
         else:
             self._send_engine_cmd("rec_stop")
 
+    def _selected_mic_device_hint(self) -> str:
+        hint = "ZOOM U-22 Driver"
+        try:
+            text = self._influence.mic_device_combo.currentText().strip()
+            if text:
+                hint = text
+        except Exception:
+            pass
+        return hint
+
+    def _on_mic_device_changed(self, text: str):
+        hint = text.strip() or "ZOOM U-22 Driver"
+        if hasattr(self, '_audio_in_engine') and self._audio_in_engine is not None:
+            self._audio_in_engine.device_hint = hint
+            if self._audio_in_engine.running:
+                self._log("interact", f"mic device set to '{hint}' (restart mic to apply)")
+            else:
+                self._log("interact", f"mic device set to '{hint}'")
+
     # ── Camera / Interaction ───────────────────────────────────────────────
+
+    def _ensure_interaction_backends(self):
+        """Initialize shared control state and local interaction engines once."""
+        if not hasattr(self, '_control_state') or self._control_state is None:
+            from interact import ControlState
+            self._control_state = ControlState()
+        if not hasattr(self, '_interact_engine') or self._interact_engine is None:
+            from interact import InteractionEngine
+            self._interact_engine = InteractionEngine(self._control_state)
+        if not hasattr(self, '_audio_in_engine') or self._audio_in_engine is None:
+            from interact import ExternalAudioInputEngine
+            self._audio_in_engine = ExternalAudioInputEngine(
+                self._control_state,
+                device_hint=self._selected_mic_device_hint(),
+            )
+            self._audio_in_engine.slicer_log_fn = lambda msg: self.log_queue.put(("slicer", msg))
+        elif not self._audio_in_engine.running:
+            self._audio_in_engine.device_hint = self._selected_mic_device_hint()
+
+    def _set_camera_button_state(self, on: bool):
+        self._influence._camera_on = on
+        if on:
+            self._influence.camera_btn.setText("camera on")
+            self._influence.camera_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_CYAN}44;
+                    color: {ACCENT_CYAN};
+                    border: 1px solid {ACCENT_CYAN};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_CYAN}66; }}
+            """)
+        else:
+            self._influence.camera_btn.setText("camera off")
+            self._influence.camera_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
+        if self._tools_dialog and hasattr(self._tools_dialog, "camera_cb"):
+            self._tools_dialog.camera_cb.blockSignals(True)
+            self._tools_dialog.camera_cb.setChecked(on)
+            self._tools_dialog.camera_cb.blockSignals(False)
+
+    def _set_mic_button_state(self, on: bool):
+        self._influence._mic_on = on
+        if on:
+            self._influence.mic_btn.setText("mic on")
+            self._influence.mic_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_AMBER}44;
+                    color: {ACCENT_AMBER};
+                    border: 1px solid {ACCENT_AMBER};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_AMBER}66; }}
+            """)
+        else:
+            self._influence.mic_btn.setText("mic off")
+            self._influence.mic_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
+        if self._tools_dialog and hasattr(self._tools_dialog, "mic_cb"):
+            self._tools_dialog.mic_cb.blockSignals(True)
+            self._tools_dialog.mic_cb.setChecked(on)
+            self._tools_dialog.mic_cb.blockSignals(False)
 
     def _toggle_camera(self):
         """Start or stop the camera interaction locally in the GUI process."""
-        if not hasattr(self, '_interact_engine') or self._interact_engine is None:
-            # First-time init
-            try:
-                from interact import InteractionEngine, ControlState
-                self._control_state = ControlState()
-                self._interact_engine = InteractionEngine(self._control_state)
-            except Exception as e:
-                self._log("interact", f"camera unavailable: {e}")
-                self._influence._camera_on = False
-                self._influence.camera_btn.setText("camera off")
-                return
+        try:
+            self._ensure_interaction_backends()
+        except Exception as e:
+            self._log("interact", f"camera unavailable: {e}")
+            self._set_camera_button_state(False)
+            return
 
         if self._interact_engine.running:
             # ── Stop ──────────────────────────────────────────────────
             self._interact_engine.stop()
-            self._interact_timer.stop()
+            if hasattr(self, '_interact_timer') and not (hasattr(self, '_audio_in_engine') and self._audio_in_engine and self._audio_in_engine.running):
+                self._interact_timer.stop()
             self._viz_scroll.setVisible(False)
 
             # Reset audio DSP to safe defaults (camera only touches audio)
@@ -2070,6 +2319,7 @@ class BecomingWindow(QMainWindow):
                 self._send_engine_cmd(f"{cmd} {val:.3f}", silent=True)
             self._cam_prev_audio = None
             self._cam_frame_skip = 0
+            self._set_camera_button_state(False)
             self._log("interact", "camera OFF — audio reset")
         else:
             # ── Start ─────────────────────────────────────────────────
@@ -2082,7 +2332,82 @@ class BecomingWindow(QMainWindow):
                 self._interact_timer.timeout.connect(self._interact_tick)
             self._interact_timer.start(66)
             self._viz_scroll.setVisible(True)
+            self._set_camera_button_state(True)
             self._log("interact", "camera ON — visualizer active")
+
+    def _toggle_mic(self):
+        """Start or stop external audio input locally in the GUI process."""
+        try:
+            self._ensure_interaction_backends()
+        except Exception as e:
+            self._log("interact", f"mic unavailable: {e}")
+            self._set_mic_button_state(False)
+            return
+
+        if self._audio_in_engine.running:
+            self._audio_in_engine.stop()
+            if hasattr(self, '_interact_timer') and not (hasattr(self, '_interact_engine') and self._interact_engine and self._interact_engine.running):
+                self._interact_timer.stop()
+            self._mic_prev_behavior = None
+            self._set_mic_button_state(False)
+            self._log("interact", "mic OFF")
+        else:
+            try:
+                self._audio_in_engine.start()
+            except Exception as e:
+                self._log("interact", f"mic start failed: {e}")
+                self._set_mic_button_state(False)
+                return
+            if not hasattr(self, '_interact_timer'):
+                self._interact_timer = QTimer(self)
+                self._interact_timer.timeout.connect(self._interact_tick)
+            self._interact_timer.start(66)
+            self._mic_prev_behavior = None
+            self._set_mic_button_state(True)
+            self._log("interact", "mic ON — external audio input active")
+
+    def _toggle_slicing(self):
+        """Enable or disable live slicing on the audio input engine."""
+        if not hasattr(self, '_audio_in_engine') or self._audio_in_engine is None:
+            self._log("interact", "start mic first before enabling slicing")
+            self._set_slice_button_state(False)
+            return
+
+        if self._audio_in_engine.slicing_active:
+            self._audio_in_engine.set_slicing(False)
+            self._set_slice_button_state(False)
+            self._log("interact", "live slicing OFF")
+        else:
+            self._audio_in_engine.set_slicing(True)
+            self._set_slice_button_state(True)
+            self._log("interact", "live slicing ON — mic audio will be captured to library")
+
+    def _set_slice_button_state(self, on: bool):
+        self._influence._slice_on = on
+        if on:
+            self._influence.slice_btn.setText("slice on")
+            self._influence.slice_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ACCENT_CYAN}44;
+                    color: {ACCENT_CYAN};
+                    border: 1px solid {ACCENT_CYAN};
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {ACCENT_CYAN}66; }}
+            """)
+        else:
+            self._influence.slice_btn.setText("slice off")
+            self._influence.slice_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {FG_DIM}22;
+                    color: {FG_DIM};
+                    border: 1px solid {FG_DIM}44;
+                    border-radius: 15px; padding: 4px 18px;
+                    font-size: 12px; font-weight: 600;
+                }}
+                QPushButton:hover {{ background-color: {FG_DIM}44; }}
+            """)
 
     def _interact_tick(self):
         """Called ~15 Hz: read features, apply mapping, send audio to engine."""
@@ -2155,6 +2480,22 @@ class BecomingWindow(QMainWindow):
 
         self._cam_prev_audio = dict(audio_out)
 
+        # While mic is active, stream behavior controls from audio features.
+        mic_running = bool(getattr(self, '_audio_in_engine', None) and self._audio_in_engine.running)
+        if mic_running:
+            behavior = snap.get("behavior", {})
+            prev_b = getattr(self, '_mic_prev_behavior', None)
+            b_threshold = 0.01
+            for key, cmd in (("strain", "t"), ("saturation", "d"), ("heat", "T")):
+                val = float(behavior.get(key, 0.0))
+                if prev_b is None or abs(val - prev_b.get(key, -1.0)) > b_threshold:
+                    cmds.append(f"{cmd} {val:.3f}")
+            self._mic_prev_behavior = {
+                "strain": float(behavior.get("strain", 0.0)),
+                "saturation": float(behavior.get("saturation", 0.0)),
+                "heat": float(behavior.get("heat", 0.0)),
+            }
+
         # Send all changed commands in one write + one flush
         if cmds and self.engine_proc and self.engine_proc.poll() is None and self.engine_proc.stdin:
             try:
@@ -2171,11 +2512,16 @@ class BecomingWindow(QMainWindow):
         # Stop camera if running
         if hasattr(self, '_interact_engine') and self._interact_engine and self._interact_engine.running:
             self._interact_engine.stop()
-            if hasattr(self, '_interact_timer'):
+            if hasattr(self, '_interact_timer') and not (hasattr(self, '_audio_in_engine') and self._audio_in_engine and self._audio_in_engine.running):
                 self._interact_timer.stop()
             self._viz_scroll.setVisible(False)
-            self._influence._camera_on = False
-            self._influence.camera_btn.setText("camera off")
+            self._set_camera_button_state(False)
+        if hasattr(self, '_audio_in_engine') and self._audio_in_engine and self._audio_in_engine.running:
+            self._audio_in_engine.stop()
+            if hasattr(self, '_interact_timer') and not (hasattr(self, '_interact_engine') and self._interact_engine and self._interact_engine.running):
+                self._interact_timer.stop()
+            self._set_mic_button_state(False)
+            self._set_slice_button_state(False)
         try:
             if self.engine_proc.stdin:
                 self.engine_proc.stdin.write("q\n")
@@ -2225,7 +2571,7 @@ class BecomingWindow(QMainWindow):
     def _log(self, source: str, line: str):
         self.log_queue.put((source, line))
 
-    _TASK_SOURCES = {"harvest", "auto_tag", "balance", "library", "recording"}
+    _TASK_SOURCES = {"harvest", "auto_tag", "balance", "library", "recording", "slicer"}
 
     def _drain_log_queue(self):
         try:
@@ -2414,9 +2760,11 @@ class BecomingWindow(QMainWindow):
                     self.log_queue.put(("poem", f"line: {poem_line[:60]}"))
                     self._poem_line_signal.emit(ts, poem_line)
                 else:
-                    self.log_queue.put(("poem", "generate_line returned empty"))
+                    self.log_queue.put(("poem", "generate_line returned empty — check Ollama model"))
+                    self.log_queue.put(("status", f"poem: no response from '{model}'"))
             except Exception as e:
                 self.log_queue.put(("poem", f"error: {e}"))
+                self.log_queue.put(("status", f"poem error: {e}"))
 
         threading.Thread(target=worker, daemon=True).start()
 

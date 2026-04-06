@@ -103,10 +103,11 @@ class PlayingFragment:
 
 
 class PlaybackEngine:
-    def __init__(self):
+    def __init__(self, output_device: str | None = None):
         self.lock = threading.Lock()
         self.playing: dict[str, PlayingFragment] = {}
         self.stream = None
+        self._output_device_hint = output_device
         # Recording state
         self._recording = False
         self._rec_buffers: list[np.ndarray] = []
@@ -136,16 +137,35 @@ class PlaybackEngine:
         self._reverb_buf = np.zeros((int(SAMPLE_RATE * 0.08), CHANNELS), dtype=np.float32)
         self._reverb_pos = 0
 
+    def _resolve_output_device(self) -> int | None:
+        """Resolve output device index from hint string."""
+        hint = (self._output_device_hint or "").strip().lower()
+        if not hint:
+            return None
+        devices = sd.query_devices()
+        for idx, dev in enumerate(devices):
+            if int(dev.get("max_output_channels", 0) or 0) <= 0:
+                continue
+            name = str(dev.get("name", ""))
+            if hint in name.lower():
+                return idx
+        return None
+
     def start(self):
+        dev_idx = self._resolve_output_device()
+        dev_name = "system default"
+        if dev_idx is not None:
+            dev_name = str(sd.query_devices(dev_idx).get("name", dev_idx))
         self.stream = sd.OutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="float32",
             blocksize=1024,
             callback=self._callback,
+            device=dev_idx,
         )
         self.stream.start()
-        print("[playback] engine started")
+        print(f"[playback] engine started (output: {dev_name})")
 
     def stop(self):
         if self.stream:

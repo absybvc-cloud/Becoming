@@ -1,0 +1,6 @@
+Recording started: 2026-04-06T01:47:39.119902
+Duration: 87.0s
+Fragments spawned: 2
+
+  [01:03.48] freesound_340565_92065b64  role=event  tags=Impact, Crash, Bang, metal, Boom, Tools, impact, aggressive, Tool, Hit, rhythmic, Steel, rare_event, industrial, Metal, Plastic, Smash, Friction, percussive
+  [01:23.55] freesound_762195_1067f787  role=ground  tags=effect, force, glass, processing, field, resonant, metal, atmosphere, fantastic, sound, mysterious, electronic, sci-fi, drift_material, drone, ambient, cristal, weird, energy, ambience, morphing, texture, sound-design, particles, cinematic, noise, pad, dark, additional, abstract, fx, chimes, sfx, transition
